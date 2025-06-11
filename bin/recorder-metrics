@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # encoding: utf-8
 import argparse
-import recorder_viz
-from recorder_viz import RecorderReader
+import recorder_pm
+from recorder_pm import RecorderReader
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process trace data and generate a report.")
@@ -21,4 +21,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     reader = RecorderReader(args.input_path)
-    recorder_viz.generate_report(reader, args.output_path)
+    recorder_pm.generate_report(reader, args.output_path)

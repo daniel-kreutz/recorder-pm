@@ -35,7 +35,7 @@ Per-rank metadata:
     number of files accessed, and
     function counter.
 
-    This is a recorder-viz only calss
+    This is a recorder-viz only class
     not used in C reader code.
 """
 class LocalMetadata():

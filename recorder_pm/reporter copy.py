@@ -13,6 +13,7 @@ from .creader_wrapper import RecorderReader
 from .html_writer import HTMLWriter
 from .build_offset_intervals import ignore_files
 from .build_offset_intervals import build_offset_intervals
+from .metrics import Metrics
 
 
 
@@ -509,6 +510,18 @@ def generate_report(reader, output_path):
     io_sizes(intervals, htmlWriter, read=False)
 
     htmlWriter.write_html()
+
+
+def pure_bw(reader, metrics, read):
+    test = 0
+    
+    
+
+
+def print_metrics(reader):
+    metrics = Metrics()
+    pure_bw(reader, metrics, read=False)
+
 
 
 if __name__ == "__main__":

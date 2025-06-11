@@ -23,7 +23,7 @@ recorder-report -i=path/to/trace -o=path/to/report
 Advanced Usages
 -------------
 
-The `RecorderReader` class contains all infomration about the Recorder traces.
+The `RecorderReader` class contains all information about the Recorder traces.
 
 ```python
 class RecorderReader:
@@ -32,7 +32,7 @@ class RecorderReader:
     self.records: self.records[i] is a list of Record objects of rank i.
 ```
 
-`GlobalMetadta`, `LocalMetadata` and `Record` are three Python wrappers of C structures. 
+`GlobalMetadata`, `LocalMetadata` and `Record` are three Python wrappers of C structures. 
 
 ```python
 class LocalMetadata(Structure):

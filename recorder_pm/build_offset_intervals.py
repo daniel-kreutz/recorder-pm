@@ -211,3 +211,45 @@ def build_offset_intervals(reader):
             intervals[filename].append( [rank, record.tstart, record.tend, offset, count, isRead, segments] )
 
     return intervals
+
+# only return record data of write / read calls by MPI / HDF5
+def build_interface_intervals(reader):
+    func_list = reader.funcs
+    ranks = reader.GM.total_ranks
+    intervals = {}
+
+    # merge the list(reader.records) of list(each rank's records) into one flat list
+    # then sort the whole list by tstart
+    records = []
+    for rank in range(ranks):
+        for i in range(reader.LMs[rank].total_records):
+            record = reader.records[rank][i]
+            record.rank = rank
+
+            # ignore user functions
+            if record.func_id >= len(func_list): continue
+
+            # only get functions that are not used in build_offset_intervals
+            if ignore_funcs(func_list[record.func_id]):
+                records.append( record )
+
+    records = sorted(records, key=lambda x: x.tstart)
+
+    for record in records:
+
+        rank = record.rank
+        func = func_list[record.func_id]
+        args = record.args_to_strs()
+        filename = ""
+        # ignore MPI_File_open / close
+        if "read" in func or "write" in func:
+            filename = args[0]
+        else: continue
+
+        if not ignore_files(filename):
+            isRead = "read" in func
+            if filename not in intervals:
+                intervals[filename] = []
+            intervals[filename].append( [rank, record.tstart, record.tend, isRead] )
+
+    return intervals

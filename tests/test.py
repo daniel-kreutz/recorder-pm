@@ -2,7 +2,7 @@
 # encoding: utf-8
 
 import sys
-from recorder_viz import RecorderReader
+from recorder_pm import RecorderReader
 
 reader = RecorderReader(sys.argv[1])
 
