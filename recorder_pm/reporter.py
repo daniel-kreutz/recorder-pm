@@ -399,6 +399,12 @@ def aggregate_file_metrics(metrics: Metrics):
     # TODO: check if further logic is required to choose files for aggregation
     # e.g. if temporary mpi files are in metrics.unique_files, that would
     # distort the aggregation results
+    if len(metrics.files_bytes_written) != 0:
+        metrics.total_bytes_written = sum(metrics.files_bytes_written.values())
+
+    if len(metrics.files_bytes_read) != 0:
+        metrics.total_bytes_read = sum(metrics.files_bytes_read.values())
+
     if len(metrics.files_pure_write_bw) != 0:
         metrics.min_pure_write_bw = min(metrics.files_pure_write_bw.values())
         metrics.max_pure_write_bw = max(metrics.files_pure_write_bw.values())
@@ -529,7 +535,29 @@ def print_metrics(reader, output_path):
     e2e_file_metrics(reader, metrics)
     aggregate_file_metrics(metrics)
 
+    with open(output_path, "w") as f:
 
+        f.write("Overall Benchmark Metrics: \n\n")
+
+        f.write("Write Metrics:\n")
+        f.write(f"Total Bytes: {metrics.total_bytes_written} \n\n")
+
+        f.write(f"POSIX Level: (min / max / avg) \n")
+        f.write(f"\tBW: {metrics.min_pure_write_bw} / {metrics.max_pure_write_bw} / {metrics.avg_pure_write_bw} \n")
+        f.write(f"\tE2E BW: {metrics.min_pure_e2e_write_bw} / {metrics.max_pure_e2e_write_bw} / {metrics.avg_pure_e2e_write_bw} \n")
+        f.write(f"\twrite time: {metrics.min_pure_write_time} / {metrics.max_pure_write_time} / {metrics.avg_pure_write_time} \n")
+        f.write(f"\tmetadata operations time: {metrics.min_pure_meta_write_time} / {metrics.max_pure_meta_write_time} / {metrics.avg_pure_meta_write_time} \n")
+        f.write(f"\tfile open time (w & r): {metrics.min_posix_open_time} / {metrics.max_posix_open_time} / {metrics.avg_posix_open_time} \n")
+        f.write(f"\tfile close time (w & r): {metrics.min_posix_close_time} / {metrics.max_posix_close_time} / {metrics.avg_posix_close_time} \n\n")
+
+        f.write(f"Interface Level: (min / max / avg) \n")
+        f.write(f"\tBW: {metrics.min_interface_write_bw} / {metrics.max_interface_write_bw} / {metrics.avg_interface_write_bw} \n")
+        f.write(f"\tE2E BW: {metrics.min_interface_e2e_write_bw} / {metrics.max_interface_e2e_write_bw} / {metrics.avg_interface_e2e_write_bw} \n")
+        f.write(f"\twrite time: {metrics.min_interface_write_time} / {metrics.max_interface_write_time} / {metrics.avg_interface_write_time} \n")
+        f.write(f"\tmetadata operations time: {metrics.min_interface_meta_write_time} / {metrics.max_interface_meta_write_time} / {metrics.avg_interface_meta_write_time} \n")
+        f.write(f"\tfile open time (w & r): {metrics.min_interface_open_time} / {metrics.max_interface_open_time} / {metrics.avg_interface_open_time} \n")
+        f.write(f"\tfile close time (w & r): {metrics.min_interface_close_time} / {metrics.max_interface_close_time} / {metrics.avg_interface_close_time} \n\n")
+        
 
 if __name__ == "__main__":
     import argparse

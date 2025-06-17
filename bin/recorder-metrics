@@ -21,4 +21,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     reader = RecorderReader(args.input_path)
-    recorder_pm.generate_report(reader, args.output_path)
+    recorder_pm.print_metrics(reader, args.output_path)

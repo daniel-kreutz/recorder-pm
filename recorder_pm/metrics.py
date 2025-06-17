@@ -21,6 +21,9 @@ class Metrics(RecorderReader):
         self.files_bytes_written = {}
         self.files_bytes_read = {}
 
+        self.total_bytes_written = 0
+        self.total_bytes_read = 0
+
         # bandwidths per file, only using timings of posix operations
         self.files_pure_write_bw = {}
         self.files_pure_read_bw = {}
