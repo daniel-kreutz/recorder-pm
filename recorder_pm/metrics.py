@@ -1,18 +1,10 @@
 from ctypes import *
 import os, glob, struct
 from .creader_wrapper import RecorderReader
-from build_offset_intervals import ignore_files
+from recorder_pm.build_intervals import ignore_files
 
 class MetricObject(RecorderReader):
     def __init__(self, reader):
-        self.total_files = 0
-        self.unique_files = set()
-        for lm in reader.LMs:
-            for file in lm.filemap:
-                if not ignore_files(file) and file not in self.unique_files:
-                    self.unique_files.add(file)
-                    self.total_files += 1
-
         # TODO: maybe add open / close time seperately
         # metrics has this structure: metrics[filename][write/read][metric]
         # the structure for each metrics[filename] can be seen in add_filename
