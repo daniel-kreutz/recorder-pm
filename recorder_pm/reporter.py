@@ -44,12 +44,10 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, writeOps: bool):
         before_ops = [x for x in metaops if x[2] < start]
         return max(before_ops, key=lambda x: x[1], default=[])
     
-
     def get_first_after(ioop, metaops):
         end = ioop[2]
         after_ops = [x for x in metaops if x[1] > end]
         return min(after_ops, key=lambda x: x[1], default=[])
-
 
     assigned_opens = []
     assigned_closes = []
@@ -73,9 +71,12 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, writeOps: bool):
     return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
 
      
-def posix_op_time_pure_bw(intervals, ranks, metricObj: MetricObject):
+def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
     total_write_size = 0
     total_read_size = 0
+    op_time_key = "posix_op_time" if posix else "mpiio_op_time"
+    pure_bw_key = "posix_pure_bw" if posix else "mpiio_pure_bw"
+    
     for filename in intervals:
         if filename not in metricObj.unique_files: continue
 
@@ -88,7 +89,7 @@ def posix_op_time_pure_bw(intervals, ranks, metricObj: MetricObject):
         # aggregate write / read durations for each rank seperately
         # so that only the maximum aggregate duration gets used for bw
         for interval in intervals[filename]:
-            rank, io_size , operation = interval[0], interval[4], interval[3]
+            rank, operation, io_size = interval[0], interval[3], interval[4]
             duration = float(interval[2]) - float(interval[1])
 
             if operation == "read":
@@ -105,31 +106,37 @@ def posix_op_time_pure_bw(intervals, ranks, metricObj: MetricObject):
         max_read_time = max(read_times)
         max_write_time = max(write_times)
         if operation == "read":
-            if sum_read_size == 0 or max_read_time == 0: continue
+            if max_read_time == 0: continue
+            if posix: metricObj.metrics["read"]["bytes_per_file"][filename] = sum_read_size
 
-            metricObj.metrics["read"]["bytes_per_file"][filename] = sum_read_size
-            metricObj.metrics["read"]["posix_op_time"][filename] = max_read_time
-            metricObj.metrics["read"]["posix_pure_bw"][filename] = sum_read_size / max_read_time / (1024*1024)
+            metricObj.metrics["read"][op_time_key][filename] = max_read_time
+            metricObj.metrics["read"][pure_bw_key][filename] = metricObj.metrics["read"]["bytes_per_file"][filename] / max_read_time / (1024*1024)
+
         elif operation == "write":
-            if sum_write_size == 0 or max_write_time == 0: continue
+            if max_write_time == 0: continue
+            if posix: metricObj.metrics["write"]["bytes_per_file"][filename] = sum_write_size
 
-            metricObj.metrics["write"]["bytes_per_file"][filename] = sum_write_size
-            metricObj.metrics["write"]["posix_op_time"][filename] = max_write_time
-            metricObj.metrics["write"]["posix_pure_bw"][filename] = sum_write_size / max_write_time / (1024*1024)
+            metricObj.metrics["write"][op_time_key][filename] = max_write_time
+            metricObj.metrics["write"][pure_bw_key][filename] = metricObj.metrics["write"]["bytes_per_file"][filename] / max_write_time / (1024*1024)
 
-    metricObj.metrics["write"]["bytes_total"] = total_write_size
-    metricObj.metrics["read"]["bytes_total"] = total_read_size
+    if posix:
+        metricObj.metrics["write"]["bytes_total"] = total_write_size
+        metricObj.metrics["read"]["bytes_total"] = total_read_size
         
     return write_times, read_times
 
 
-def posix_meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_times, read_times):
+def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_times, read_times, posix: bool):
     write_intervals = filter_intervals(intervals, ["write"])
     read_intervals  = filter_intervals(intervals, ["read"])
     open_intervals  = filter_intervals(intervals, ["open"])
     close_intervals = filter_intervals(intervals, ["close"])
+    # seek / sync intervals are not relevant for mpiio, however in this case filter_intervals just returns an empty list
     seek_intervals  = filter_intervals(intervals, ["seek"])
     sync_intervals  = filter_intervals(intervals, ["sync"])
+
+    meta_time_key = "posix_meta_time" if posix else "mpiio_meta_time"
+    e2e_bw_key = "posix_e2e_bw" if posix else "mpiio_e2e_bw"
 
     for filename in intervals:
         if filename not in metricObj.unique_files: continue
@@ -142,6 +149,7 @@ def posix_meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_time
         open_r_times  = [0.0] * ranks
         close_r_times = [0.0] * ranks
         e2e_r_times   = [0.0] * ranks
+        
         for rank in ranks:
             # the meta time gets partitioned more than necessary for the overall meta time
             # however for possible future metrics (i.e. max open / close time) it stays that way for now
@@ -171,115 +179,18 @@ def posix_meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_time
         bytes_read = metricObj.metrics["read"]["bytes_per_file"][filename]
 
         if max_e2e_write != 0 and bytes_written != 0:
-            metricObj.metrics["write"]["posix_meta_time"][filename] = max_e2e_write
-            metricObj.metrics["write"]["posix_e2e_bw"][filename] = bytes_written / max_e2e_write / (1024 * 1024)
+            metricObj.metrics["write"][meta_time_key][filename] = max_e2e_write
+            metricObj.metrics["write"][e2e_bw_key][filename] = bytes_written / max_e2e_write / (1024 * 1024)
         else:
-            metricObj.metrics["write"]["posix_meta_time"][filename] = 0.0
-            metricObj.metrics["write"]["posix_e2e_bw"][filename] = 0.0
+            metricObj.metrics["write"][meta_time_key][filename] = 0.0
+            metricObj.metrics["write"][e2e_bw_key][filename] = 0.0
 
         if max_e2e_read != 0 and bytes_read != 0:
-            metricObj.metrics["read"]["posix_meta_time"][filename] = max_e2e_read
-            metricObj.metrics["read"]["posix_e2e_bw"][filename] = bytes_written / max_e2e_read / (1024 * 1024)
+            metricObj.metrics["read"][meta_time_key][filename] = max_e2e_read
+            metricObj.metrics["read"][e2e_bw_key][filename] = bytes_read / max_e2e_read / (1024 * 1024)
         else:
-            metricObj.metrics["read"]["posix_meta_time"][filename] = 0.0
-            metricObj.metrics["read"]["posix_e2e_bw"][filename] = 0.0
-
-
-def mpiio_op_time_pure_bw(intervals, ranks, metricObj: MetricObject):
-    
-    for filename in intervals:
-        if filename not in metricObj.unique_files: continue
-
-        write_times = [0.0] * ranks
-        read_times = [0.0] * ranks
-
-        # aggregate all bytes written in file filename
-        # aggregate write / read durations for each rank seperately
-        # so that only the maximum aggregate duration gets used for bw
-        for interval in intervals[filename]:
-            rank, operation = interval[0], interval[3]
-            duration = float(interval[2]) - float(interval[1])
-
-            if operation == "read":
-                read_times[rank]  += duration
-            elif operation == "write":
-                write_times[rank] += duration
-        
-        # bandwidth has MiB/s as unit
-        max_read_time = max(read_times)
-        max_write_time = max(write_times)
-        if operation == "read":
-            if max_read_time == 0: continue
-
-            read_size = metricObj.metrics["read"]["bytes_per_file"][filename]
-            metricObj.metrics["read"]["mpiio_op_time"][filename] = max_read_time
-            metricObj.metrics["read"]["mpiio_pure_bw"][filename] = read_size / max_read_time / (1024*1024)
-        elif operation == "write":
-            if max_write_time == 0: continue
-
-            write_size = metricObj.metrics["write"]["bytes_per_file"][filename]
-            metricObj.metrics["write"]["mpiio_op_time"][filename] = max_write_time
-            metricObj.metrics["write"]["mpiio_pure_bw"][filename] = write_size / max_write_time / (1024*1024)
-
-    return write_times, read_times
-
-
-def mpiio_meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_times, read_times):
-    write_intervals = filter_intervals(intervals, ["write"])
-    read_intervals  = filter_intervals(intervals, ["read"])
-    open_intervals  = filter_intervals(intervals, ["open"])
-    close_intervals = filter_intervals(intervals, ["close"])
-
-    for filename in intervals:
-        if filename not in metricObj.unique_files: continue
-        meta_w_times  = [0.0] * ranks
-        open_w_times  = [0.0] * ranks
-        close_w_times = [0.0] * ranks
-        e2e_w_times   = [0.0] * ranks
-
-        meta_r_times  = [0.0] * ranks
-        open_r_times  = [0.0] * ranks
-        close_r_times = [0.0] * ranks
-        e2e_r_times   = [0.0] * ranks
-        for rank in ranks:
-            # the meta time gets partitioned more than necessary for the overall meta time
-            # however for possible future metrics (i.e. max open / close time) it stays that way for now
-            writes = sorted([x for x in write_intervals[filename] if x[0] == rank], key=lambda x: x.tstart)
-            reads  = sorted([x for x in read_intervals[filename] if x[0] == rank], key=lambda x: x.tstart)
-            opens  = sorted([x for x in open_intervals[filename] if x[0] == rank], key=lambda x: x.tstart)
-            closes = sorted([x for x in close_intervals[filename] if x[0] == rank], key=lambda x: x.tstart)
-            
-            write_metaops = assign_metaops(writes, opens, closes, [], [], True)
-            read_metaops = assign_metaops(reads, opens, closes, [], [], False)
-
-            open_w_times[rank]  = get_duration_sum(write_metaops["open"])
-            close_w_times[rank] = get_duration_sum(write_metaops["close"])
-            meta_w_times[rank]  = open_w_times[rank] + close_w_times[rank]
-            e2e_w_times[rank]   = write_times[rank] + meta_w_times[rank]
-
-            open_r_times[rank]  = get_duration_sum(read_metaops["open"])
-            close_r_times[rank] = get_duration_sum(read_metaops["close"])
-            meta_r_times[rank]  = open_r_times[rank] + close_r_times[rank]
-            e2e_r_times[rank]   = read_times[rank] + meta_r_times[rank]
-
-        max_e2e_write = max(e2e_w_times)
-        max_e2e_read = max(e2e_r_times)
-        bytes_written = metricObj.metrics["write"]["bytes_per_file"][filename]
-        bytes_read = metricObj.metrics["read"]["bytes_per_file"][filename]
-
-        if max_e2e_write != 0 and bytes_written != 0:
-            metricObj.metrics["write"]["mpiio_meta_time"][filename] = max_e2e_write
-            metricObj.metrics["write"]["mpiio_e2e_bw"][filename] = bytes_written / max_e2e_write / (1024 * 1024)
-        else:
-            metricObj.metrics["write"]["mpiio_meta_time"][filename] = 0.0
-            metricObj.metrics["write"]["mpiio_e2e_bw"][filename] = 0.0
-
-        if max_e2e_read != 0 and bytes_read != 0:
-            metricObj.metrics["read"]["mpiio_meta_time"][filename] = max_e2e_read
-            metricObj.metrics["read"]["mpiio_e2e_bw"][filename] = bytes_written / max_e2e_read / (1024 * 1024)
-        else:
-            metricObj.metrics["read"]["mpiio_meta_time"][filename] = 0.0
-            metricObj.metrics["read"]["mpiio_e2e_bw"][filename] = 0.0
+            metricObj.metrics["read"][meta_time_key][filename] = 0.0
+            metricObj.metrics["read"][e2e_bw_key][filename] = 0.0
 
 
 def print_metrics(reader, output_path):
@@ -289,11 +200,11 @@ def print_metrics(reader, output_path):
     posix_intervals = build_intervals(reader, True)
     mpiio_intervals = build_intervals(reader, False)
 
-    posix_write_times, posix_read_times = posix_op_time_pure_bw(posix_intervals, ranks, metrics)
-    posix_meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_write_times, posix_read_times)
+    posix_write_times, posix_read_times = op_time_pure_bw(posix_intervals, ranks, metrics, True)
+    meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_write_times, posix_read_times, True)
 
-    mpiio_write_times, mpiio_read_times = mpiio_op_time_pure_bw(mpiio_intervals, ranks, metrics)
-    mpiio_meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_write_times, mpiio_read_times)
+    mpiio_write_times, mpiio_read_times = op_time_pure_bw(mpiio_intervals, ranks, metrics, False)
+    meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_write_times, mpiio_read_times, False)
 
 
     with open(output_path, "w") as f:
