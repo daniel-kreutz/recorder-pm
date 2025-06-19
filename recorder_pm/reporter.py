@@ -105,23 +105,26 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
         # bandwidth has MiB/s as unit
         max_read_time = max(read_times)
         max_write_time = max(write_times)
+
+        if filename not in metricObj.metrics: metricObj.add_filename(filename)
+
         if operation == "read":
             if max_read_time == 0: continue
-            if posix: metricObj.metrics["read"]["bytes_per_file"][filename] = sum_read_size
+            if posix: metricObj.metrics[filename]["read"]["bytes"] = sum_read_size
 
-            metricObj.metrics["read"][op_time_key][filename] = max_read_time
-            metricObj.metrics["read"][pure_bw_key][filename] = metricObj.metrics["read"]["bytes_per_file"][filename] / max_read_time / (1024*1024)
+            metricObj.metrics[filename]["read"][op_time_key] = max_read_time
+            metricObj.metrics[filename]["read"][pure_bw_key] = metricObj.metrics[filename]["read"]["bytes"] / max_read_time / (1024*1024)
 
         elif operation == "write":
             if max_write_time == 0: continue
-            if posix: metricObj.metrics["write"]["bytes_per_file"][filename] = sum_write_size
+            if posix: metricObj.metrics[filename]["write"]["bytes"] = sum_write_size
 
-            metricObj.metrics["write"][op_time_key][filename] = max_write_time
-            metricObj.metrics["write"][pure_bw_key][filename] = metricObj.metrics["write"]["bytes_per_file"][filename] / max_write_time / (1024*1024)
+            metricObj.metrics[filename]["write"][op_time_key] = max_write_time
+            metricObj.metrics[filename]["write"][pure_bw_key] = metricObj.metrics[filename]["write"]["bytes"] / max_write_time / (1024*1024)
 
     if posix:
-        metricObj.metrics["write"]["bytes_total"] = total_write_size
-        metricObj.metrics["read"]["bytes_total"] = total_read_size
+        metricObj.metrics["overall"]["write"]["bytes_total"] = total_write_size
+        metricObj.metrics["overall"]["read"]["bytes_total"] = total_read_size
         
     return write_times, read_times
 
@@ -175,22 +178,33 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, write_times, rea
 
         max_e2e_write = max(e2e_w_times)
         max_e2e_read = max(e2e_r_times)
-        bytes_written = metricObj.metrics["write"]["bytes_per_file"][filename]
-        bytes_read = metricObj.metrics["read"]["bytes_per_file"][filename]
+        bytes_written = metricObj.metrics[filename]["write"]["bytes"]
+        bytes_read = metricObj.metrics[filename]["read"]["bytes"]
+
+        if filename not in metricObj.metrics: metricObj.add_filename(filename)
 
         if max_e2e_write != 0 and bytes_written != 0:
-            metricObj.metrics["write"][meta_time_key][filename] = max_e2e_write
-            metricObj.metrics["write"][e2e_bw_key][filename] = bytes_written / max_e2e_write / (1024 * 1024)
-        else:
-            metricObj.metrics["write"][meta_time_key][filename] = 0.0
-            metricObj.metrics["write"][e2e_bw_key][filename] = 0.0
+            metricObj.metrics[filename]["write"][meta_time_key] = max_e2e_write
+            metricObj.metrics[filename]["write"][e2e_bw_key] = bytes_written / max_e2e_write / (1024 * 1024)
 
         if max_e2e_read != 0 and bytes_read != 0:
-            metricObj.metrics["read"][meta_time_key][filename] = max_e2e_read
-            metricObj.metrics["read"][e2e_bw_key][filename] = bytes_read / max_e2e_read / (1024 * 1024)
-        else:
-            metricObj.metrics["read"][meta_time_key][filename] = 0.0
-            metricObj.metrics["read"][e2e_bw_key][filename] = 0.0
+            metricObj.metrics[filename]["read"][meta_time_key] = max_e2e_read
+            metricObj.metrics[filename]["read"][e2e_bw_key] = bytes_read / max_e2e_read / (1024 * 1024)
+
+
+def print_operation(file, op):
+    file.write(f"\tBytes: {op["bytes"]} \n")
+    file.write(f"\tPOSIX Level Metrics:\n")
+    file.write(f"\t\tPure Operation Time: {op["posix_op_time"]} \n")
+    file.write(f"\t\tPure Operation Bandwidth: {op["posix_pure_bw"]} \n")
+    file.write(f"\t\tE2E Operation Time: {op["posix_meta_time"]} \n")
+    file.write(f"\t\tE2E Operation Bandwidth: {op["posix_e2e_bw"]} \n")
+    file.write(f"\tMPIIO Level Metrics:\n")
+    file.write(f"\t\tPure Operation Time: {op["mpiio_op_time"]} \n")
+    file.write(f"\t\tPure Operation Bandwidth: {op["mpiio_pure_bw"]} \n")
+    file.write(f"\t\tE2E Operation Time: {op["mpiio_meta_time"]} \n")
+    file.write(f"\t\tE2E Operation Bandwidth: {op["mpiio_e2e_bw"]} \n")
+
 
 
 def print_metrics(reader, output_path):
@@ -209,26 +223,38 @@ def print_metrics(reader, output_path):
 
     with open(output_path, "w") as f:
 
-        f.write("Overall Benchmark MetricObject: \n\n")
+        #f.write("Overall Benchmark MetricObject: \n\n")
 
-        f.write("Write MetricObject:\n")
-        f.write(f"Total Bytes:  \n\n")
+        #f.write("Write MetricObject:\n")
+        #f.write(f"Total Bytes:  \n\n")
 
-        f.write(f"POSIX Level: (min / max / avg) \n")
-        f.write(f"\tBW:  \n")
-        f.write(f"\tE2E BW:  \n")
-        f.write(f"\twrite time:  \n")
-        f.write(f"\tmetadata operations time:  \n")
-        f.write(f"\tfile open time (w & r):  \n")
-        f.write(f"\tfile close time (w & r):  \n\n")
+        #f.write(f"POSIX Level: (min / max / avg) \n")
+        #f.write(f"\tBW:  \n")
+        #f.write(f"\tE2E BW:  \n")
+        #f.write(f"\twrite time:  \n")
+        #f.write(f"\tmetadata operations time:  \n")
+        #f.write(f"\tfile open time (w & r):  \n")
+        #f.write(f"\tfile close time (w & r):  \n\n")
 
-        f.write(f"mpiio Level: (min / max / avg) \n")
-        f.write(f"\tBW:  \n")
-        f.write(f"\tE2E BW:  \n")
-        f.write(f"\twrite time:  \n")
-        f.write(f"\tmetadata operations time:  \n")
-        f.write(f"\tfile open time (w & r):  \n")
-        f.write(f"\tfile close time (w & r):  \n\n")
+        #f.write(f"mpiio Level: (min / max / avg) \n")
+        #f.write(f"\tBW:  \n")
+        #f.write(f"\tE2E BW:  \n")
+        #f.write(f"\twrite time:  \n")
+        #f.write(f"\tmetadata operations time:  \n")
+        #f.write(f"\tfile open time (w & r):  \n")
+        #f.write(f"\tfile close time (w & r):  \n\n")
+        f.write(f"Overall Metrics:\n")
+        f.write(f"Total bytes written: {metrics.metrics["overall"]["write"]["bytes_total"]}")
+        f.write(f"Total bytes read: {metrics.metrics["overall"]["read"]["bytes_total"]}")
+
+        f.write(f"Per File Metrics: \n\n")
+        for filename in metrics.metrics:
+            if filename == "overall": continue
+            f.write(f"File: {filename}\n")
+            f.write(f"Write:\n")
+            print_operation(f, metrics.metrics[filename]["write"])
+            f.write(f"Read:\n")
+            print_operation(f, metrics.metrics[filename]["read"])
         
 
 if __name__ == "__main__":

@@ -14,33 +14,40 @@ class MetricObject(RecorderReader):
                     self.total_files += 1
 
         # TODO: maybe add open / close time seperately
+        # metrics has this structure: metrics[filename][write/read][metric]
+        # the structure for each metrics[filename] can be seen in add_filename
         self.metrics = {
-            "write": {
-                "bytes_total": 0,       # total bytes written across all files
-                "bytes_per_file": {},   # total bytes written per file
-                "posix_op_time": {},    # posix write time per file (max of all rank times) 
-                "posix_meta_time": {},  # posix meta + write time per file (max of all rank times)
-                "posix_pure_bw": {},    # bandwidth per file that only contains posix write times
-                "posix_e2e_bw": {},     # bandwidth per file that only contains posix meta / write times
-                "mpiio_op_time": {},    # mpiio write time per file (max of all rank times) 
-                "mpiio_meta_time": {},  # mpiio meta + write time per file (max of all rank times)   
-                "mpiio_pure_bw": {},    # mpiio write time per file (max of all rank times)     
-                "mpiio_e2e_bw": {}      # mpiio meta + write time per file (max of all rank times)
-            },
-            "read": {                   # analogous to write metrics
-                "bytes_total": 0,
-                "bytes_per_file": {},
-                "posix_op_time": {},
-                "posix_meta_time": {},
-                "posix_pure_bw": {},
-                "posix_e2e_bw": {},
-                "mpiio_op_time": {},
-                "mpiio_meta_time": {},
-                "mpiio_pure_bw": {},
-                "mpiio_e2e_bw": {}
+            "overall": {
+                "write": {"bytes_total": 0},
+                "read": {"bytes_total": 0}
             }
         }
 
         # TODO: add IOPS if there is enough time
 
+    def add_filename(self, filename):
+        self.metrics[filename] = {
+            "write": {
+                "bytes": 0,              # total bytes written per file
+                "posix_op_time": 0.0,    # posix write time per file (max of all rank times) 
+                "posix_meta_time": 0.0,  # posix meta + write time per file (max of all rank times)
+                "posix_pure_bw": 0.0,    # bandwidth per file that only contains posix write times
+                "posix_e2e_bw": 0.0,     # bandwidth per file that only contains posix meta / write times
+                "mpiio_op_time": 0.0,    # mpiio write time per file (max of all rank times) 
+                "mpiio_meta_time": 0.0,  # mpiio meta + write time per file (max of all rank times)   
+                "mpiio_pure_bw": 0.0,    # mpiio write time per file (max of all rank times)     
+                "mpiio_e2e_bw": 0.0      # mpiio meta + write time per file (max of all rank times)
+            },
+            "read": {                   # analogous to write metrics
+                "bytes": 0,
+                "posix_op_time": 0.0,
+                "posix_meta_time": 0.0,
+                "posix_pure_bw": 0.0,
+                "posix_e2e_bw": 0.0,
+                "mpiio_op_time": 0.0,
+                "mpiio_meta_time": 0.0,
+                "mpiio_pure_bw": 0.0,
+                "mpiio_e2e_bw": 0.0
+            }
+        }
 
