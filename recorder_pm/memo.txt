@@ -2,7 +2,7 @@ At root directory,
 
 # 1. Update version
 Update file setup.py
-Update file recorder-viz/__init__.py
+Update file recorder-pm/__init__.py
 
 # 2. Build 
 rm -rf build dist
