@@ -1,562 +1,323 @@
 #!/usr/bin/env python
 # encoding: utf-8
 from __future__ import absolute_import
-import math, os
-import numpy as np
-from bokeh.plotting import figure, output_file, show
-from bokeh.embed import components
-from bokeh.models import FixedTicker, ColumnDataSource, LabelSet
-from prettytable import PrettyTable
-
-
 from .creader_wrapper import RecorderReader
-from .html_writer import HTMLWriter
-from .build_offset_intervals import *
-from .metrics import Metrics
+from .build_intervals import *
+from .metrics import MetricObject
+from datetime import datetime
+from bisect import bisect_left, bisect_right
 
 
-
-# For local test
-"""
-from creader_wrapper import RecorderReader
-from html_writer import HTMLWriter
-from build_offset_intervals import ignore_files
-from build_offset_intervals import build_offset_intervals
-"""
-
-
-# 2.1
-def function_layers(reader, htmlWriter):
-    func_list = reader.funcs
-    x = {'hdf5':0, 'mpi':0, 'posix':0 }
-    for LM in reader.LMs:
-        for func_id in range(len(func_list)):
-            count = LM.function_count[func_id]
-            if count <= 0: continue
-            if "H5" in func_list[func_id]:
-                x['hdf5'] += count
-            elif "MPI" in func_list[func_id]:
-                x['mpi'] += count
-            else:
-                x['posix'] += count
-    script, div = components(pie_chart(x))
-    htmlWriter.functionLayers = script+div
-
-
-def function_times(reader, htmlWriter):
-    func_list = reader.funcs
-
-    aggregate = np.zeros(256)
-    for rank in range(reader.GM.total_ranks):
-        records = reader.records[rank]
-        for i in range(reader.LMs[rank].total_records):
-            record = records[i]
-
-            # ignore user functions
-            if record.func_id >= len(func_list): continue
-
-            aggregate[record.func_id] += (record.tend - record.tstart)
-
-    funcnames, times = np.array([]), np.array([])
-
-    for i in range(len(aggregate)):
-        if aggregate[i] > 0:
-            funcnames = np.append(funcnames, func_list[i])
-            times = np.append(times, aggregate[i])
-
-    index = np.argsort(times)[::-1]
-    times = times[index]
-    times = [str(t) for t in times]
-    funcnames = funcnames[index]
-
-    p = figure(x_axis_label="Spent Time (Seconds)", y_axis_label="Function", y_range=funcnames)
-    p.hbar(y=funcnames, right=times, height=0.8, left=0)
-    labels = LabelSet(x='x', y='y', text='x', x_offset=0, y_offset=-8, text_font_size="10pt",
-                source=ColumnDataSource(dict(x=times, y=funcnames)))
-    p.add_layout(labels)
-
-    script, div = components(p)
-    htmlWriter.functionTimes = div + script
-
-
-# 3.1
-def overall_io_activities(reader, htmlWriter):
-
-    func_list = reader.funcs
-    nan = float('nan')
-
-    def io_activity(rank):
-        x_read, x_write, y_read, y_write = [], [], [], []
-
-        for i in range(reader.LMs[rank].total_records):
-            record = reader.records[rank][i]
-
-            # ignore user functions
-            if record.func_id >= len(func_list): continue
-
-            funcname = func_list[record.func_id]
-            if "MPI" in funcname or "H5" in funcname: continue
-            if "dir" in funcname: continue
-
-            if "write" in funcname or "fprintf" in funcname:
-                x_write.append(record.tstart)
-                x_write.append(record.tend)
-                x_write.append(nan)
-            if "read" in funcname:
-                x_read.append(record.tstart)
-                x_read.append(record.tend)
-                x_read.append(nan)
-
-        if(len(x_write)>0): x_write = x_write[0: len(x_write)-1]
-        if(len(x_read)>0): x_read = x_read[0: len(x_read)-1]
-
-        y_write = [rank] * len(x_write)
-        y_read = [rank] * len(x_read)
-
-        return x_read, x_write, y_read, y_write
-
-
-    p = figure(x_axis_label="Time", y_axis_label="Rank", width=600, height=400)
-    for rank in range(reader.GM.total_ranks):
-        x_read, x_write, y_read, y_write = io_activity(rank)
-        p.line(x_write, y_write, line_color='red', line_width=20, alpha=1.0, legend_label="write")
-        p.line(x_read, y_read, line_color='blue', line_width=20, alpha=1.0, legend_label="read")
-
-    p.legend.location = "top_left"
-    script, div = components(p)
-    htmlWriter.overallIOActivities = div + script
-
-
-def pure_file_metrics(intervals, metrics: Metrics):
-
+def filter_intervals(intervals, operations: list[str]):
+    return_intervals = {}
     for filename in intervals:
-        if filename not in metrics.unique_files: continue
+        return_intervals[filename] = []
+        for interval in intervals[filename]:
+            for op in operations:
+                if op == interval[3]:
+                    return_intervals[filename].append(interval)
+    return return_intervals
+
+
+def get_duration_sum(intervals):
+    duration_sum = 0.0
+    for interval in intervals:
+        duration_sum += interval[2] - interval[1]
+    return duration_sum
+
+
+def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool):
+    
+    #def get_last_before(ioop, metaops):
+    #    if not metaops: return []
+    #    start = ioop[1]
+    #    for op in reversed(metaops):
+    #        if op[1] < start and op[2] < start:
+    #            return op
+    #    return []
+#
+    #
+    #def get_first_after(ioop, metaops):
+    #    if not metaops: return []
+    #    end = ioop[2]
+    #    for op in metaops:
+    #        if op[1] > end:
+    #            return op
+    #    return []
+    
+
+    def get_last_before(ioop, metaops, starts):
+        if not metaops: return []
+        
+        start = ioop[1]
+        pos = bisect_left(starts, start)
+        if pos >= len(starts):
+            last_index = len(starts) - 1
+            if metaops[last_index][2] < start:
+                return metaops[last_index]
+            else: return []
+
+        while(pos > 0 and metaops[pos][2] >= start):
+            pos -= 1
+        
+        if pos > 0:
+            return metaops[pos]
+        elif pos == 0:
+            if metaops[pos][2] < start:
+                return metaops[pos]
+        return []
+
+    
+    def get_first_after(ioop, metaops, starts):
+        if not metaops: return []
+        end = ioop[2]
+        pos = bisect_right(starts, end)
+        if pos >= len(starts):
+            return []
+        return metaops[pos]
+
+    assigned_opens = []
+    assigned_closes = []
+    assigned_other = []
+
+    print(f"assign_metaops CALLED for {'WRITE' if writeOps else 'READ'}")
+    op_counter = 0
+    total_ops = len(ioops)
+
+    #max_start = max(ioops, key=lambda x: x[1], default=0)
+    #min_end = min(ioops, key=lambda x: x[2], default=0)
+
+    # filter out non-relevant meta ops
+    #opens = [x for x in opens if x[2] <= max_start[1]]
+    #closes = [x for x in closes if x[1] >= min_end[2]]
+    #seeks = [x for x in seeks if x[2] <= max_start[1]]
+    #syncs = [x for x in syncs if x[1] >= min_end[2]]
+    #set_sizes = [x for x in set_sizes if x[2] <= max_start[1]]
+    opens_starts = [x[1] for x in opens]
+    closes_starts = [x[1] for x in closes]
+    seeks_starts = [x[1] for x in seeks]
+    syncs_starts = [x[1] for x in syncs]
+    set_sizes_starts = [x[1] for x in set_sizes]
+
+    for op in ioops:
+        op_counter += 1
+        for i in range(1, 6):
+            if (total_ops // 5) * i == op_counter:
+                print(f"current op: {op[3]}\t({op_counter} / {total_ops})")
+                break
+        
+
+        last_open = get_last_before(op, opens, opens_starts)
+        #print("last open done")
+        last_seek = get_last_before(op, seeks, seeks_starts)
+        #print("last seek done")
+        first_close = get_first_after(op, closes, closes_starts)
+        #print("first close done")
+
+        if last_open and last_open not in assigned_opens:
+            assigned_opens.append(last_open)
+        if last_seek and last_seek not in assigned_other:
+            assigned_other.append(last_seek)
+        if first_close and first_close not in assigned_closes:
+            assigned_closes.append(first_close)
+        if writeOps:
+            first_sync = get_first_after(op, syncs, syncs_starts)
+            last_set_size = get_last_before(op, set_sizes, set_sizes_starts)
+
+            if first_sync and first_sync not in assigned_other:
+                assigned_other.append(first_sync)
+            #print("first sync done")
+            if last_set_size and last_set_size not in assigned_other:
+                assigned_other.append(last_set_size)
+            #print("last set size done")
+        #print("assigned all metaops for current op\n")
+    print(f"assign_metaops DONE for {'WRITE' if writeOps else 'READ'}")
+    return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
+
+     
+def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
+    total_write_size = 0
+    total_read_size = 0
+    op_time_key = "posix_op_time" if posix else "mpiio_op_time"
+    pure_bw_key = "posix_pure_bw" if posix else "mpiio_pure_bw"
+    files_write_times = {}
+    files_read_times = {}
+    
+    for filename in intervals:
 
         sum_write_size = 0
-        sum_write_time = 0
+        write_times = [0.0] * ranks
         sum_read_size = 0
-        sum_read_time = 0
-        tmp_bw = 0
+        read_times = [0.0] * ranks
 
+        # aggregate all bytes written in file
+        # aggregate write / read durations for each rank seperately
+        # so that only the maximum aggregate duration gets used for bw
         for interval in intervals[filename]:
-            io_size , is_read = interval[4], interval[5]
+            rank, operation, io_size = interval[0], interval[3], interval[4]
             duration = float(interval[2]) - float(interval[1])
 
-            if is_read:
+            if operation == "read":
                 sum_read_size  += io_size
-                sum_read_time  += duration
-            else:
+                read_times[rank]  += duration
+            elif operation == "write":
                 sum_write_size += io_size
-                sum_write_time += duration
+                write_times[rank] += duration
+
+        total_write_size += sum_write_size
+        total_read_size += sum_read_size
+
+        files_write_times[filename] = write_times
+        files_read_times[filename] = read_times
         
         # bandwidth has MiB/s as unit
-        if is_read:
-            if sum_read_size == 0 or sum_read_time == 0: continue
+        max_read_time = max(read_times)
+        max_write_time = max(write_times)
 
-            metrics.files_bytes_read[filename] = sum_read_size
-            metrics.files_pure_read_time[filename] = sum_read_time
+        if filename not in metricObj.metrics: metricObj.add_filename(filename)
 
-            tmp_bw = sum_read_size / sum_read_time / (1024*1024)
-            metrics.files_pure_read_bw[filename] = tmp_bw
-        else:
-            if sum_write_size == 0 or sum_write_time == 0: continue
+        if max_read_time != 0:
+            if posix: metricObj.metrics[filename]['read']['bytes'] = sum_read_size
+            metricObj.metrics[filename]['read'][op_time_key] = max_read_time
+            metricObj.metrics[filename]['read'][pure_bw_key] = metricObj.metrics[filename]['read']['bytes'] / max_read_time / (1024*1024)
 
-            metrics.files_bytes_written[filename] = sum_write_size
-            metrics.files_pure_write_time[filename] = sum_write_time
+        if max_write_time != 0:
+            if posix: metricObj.metrics[filename]['write']['bytes'] = sum_write_size
+            metricObj.metrics[filename]['write'][op_time_key] = max_write_time
+            metricObj.metrics[filename]['write'][pure_bw_key] = metricObj.metrics[filename]['write']['bytes'] / max_write_time / (1024*1024)
 
-            tmp_bw = sum_write_size / sum_write_time / (1024*1024)
-            metrics.files_pure_write_bw[filename] = tmp_bw
+    if posix:
+        metricObj.metrics['overall']['write']['bytes_total'] = total_write_size
+        metricObj.metrics['overall']['read']['bytes_total'] = total_read_size
+        
+    return files_write_times, files_read_times
 
 
-def interface_file_metrics(intervals, metrics: Metrics):
-    
+def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_times, files_read_times, posix: bool):
+    write_intervals = filter_intervals(intervals, ['write'])
+    read_intervals  = filter_intervals(intervals, ['read'])
+    open_intervals  = filter_intervals(intervals, ['open'])
+    close_intervals = filter_intervals(intervals, ['close'])
+    # these intervals are not necessarily relevant, however in this case filter_intervals just returns an empty list
+    seek_intervals  = filter_intervals(intervals, ['seek'])
+    sync_intervals  = filter_intervals(intervals, ['sync'])
+    set_size_intervals = filter_intervals(intervals, ['set_size'])
+
+    meta_time_key = "posix_meta_time" if posix else "mpiio_meta_time"
+    e2e_bw_key = "posix_e2e_bw" if posix else "mpiio_e2e_bw"
+
+    file_counter = 0
+    total_files = len(intervals)
+
     for filename in intervals:
-        if filename not in metrics.unique_files: continue
+        file_counter += 1
+        print(f"File {file_counter} / {total_files}")
+        meta_w_times  = [0.0] * ranks
+        open_w_times  = [0.0] * ranks
+        close_w_times = [0.0] * ranks
+        e2e_w_times   = [0.0] * ranks
+        write_times = files_write_times[filename]
 
-        sum_write_time = 0
-        sum_write_size = metrics.files_bytes_written[filename]
-        sum_read_time = 0
-        sum_read_size = metrics.files_bytes_read[filename]
-        tmp_bw = 0
-
-        for interval in intervals[filename]:
-            is_read = interval[3]
-            duration = float(interval[2]) - float(interval[1])
-
-            if is_read:
-                sum_read_time  += duration
-            else:
-                sum_write_time += duration
-
-        # bandwidth has MiB/s as unit
-        if is_read:
-            if sum_read_size == 0 or sum_read_time == 0: continue
-
-            metrics.files_interface_read_time[filename] = sum_read_time
-            sum_read_time += metrics.files_pure_read_time[filename]
-
-            tmp_bw = sum_read_size / sum_read_time / (1024*1024)
-            metrics.files_interface_read_bw[filename] = tmp_bw
-        else:
-            if sum_write_size == 0 or sum_write_time == 0: continue
-
-            metrics.files_interface_write_time[filename] = sum_write_time
-            sum_write_time += metrics.files_pure_write_time[filename]
-
-            tmp_bw = sum_write_size / sum_write_time / (1024*1024)
-            metrics.files_interface_write_bw[filename] = tmp_bw
-
-
-def e2e_file_metrics(reader, metrics: Metrics):
-
-    pure_meta_write_records, pure_meta_read_records, pure_open_records, pure_close_records = file_open_close_records(reader, True)
-    interface_meta_write_records, interface_meta_read_records, interface_open_records, interface_close_records = file_open_close_records(reader, False)
-
-    for filename in metrics.files_bytes_written:
-        metrics.files_pure_e2e_write_bw[filename] = 0
-        metrics.files_pure_e2e_read_bw[filename] = 0
-        metrics.files_interface_e2e_write_bw[filename] = 0
-        metrics.files_interface_e2e_read_bw[filename] = 0
-
-        sum_pure_meta_write_time = 0
-        sum_pure_meta_read_time = 0
-        sum_pure_open_time = 0
-        sum_pure_close_time = 0
-        sum_interface_meta_write_time = 0
-        sum_interface_meta_read_time = 0
-        sum_interface_open_time = 0
-        sum_interface_close_time = 0
-
-        for record in pure_meta_write_records[filename]:
-            sum_pure_meta_write_time = record.tend - record.tstart
-        metrics.files_pure_meta_write_time[filename] = sum_pure_meta_write_time
+        meta_r_times  = [0.0] * ranks
+        open_r_times  = [0.0] * ranks
+        close_r_times = [0.0] * ranks
+        e2e_r_times   = [0.0] * ranks
+        read_times = files_read_times[filename]
         
-        for record in pure_meta_read_records[filename]:
-            sum_pure_meta_read_time = record.tend - record.tstart
-        metrics.files_pure_meta_read_time[filename] = sum_pure_meta_read_time
-
-        for record in pure_open_records[filename]:
-            sum_pure_open_time = record.tend - record.tstart
-        metrics.files_posix_open_time[filename] = sum_pure_open_time
-        
-        for record in pure_close_records[filename]:
-            sum_pure_close_time = record.tend - record.tstart
-        metrics.files_posix_close_time[filename] = sum_pure_close_time
-
-        for record in interface_meta_write_records[filename]:
-            sum_interface_meta_write_time = record.tend - record.tstart
-        metrics.files_interface_meta_write_time[filename] = sum_interface_meta_write_time
-        
-        for record in interface_meta_read_records[filename]:
-            sum_interface_meta_read_time = record.tend - record.tstart
-        metrics.files_interface_meta_read_time[filename] = sum_interface_meta_read_time
-
-        for record in interface_open_records[filename]:
-            sum_interface_open_time = record.tend - record.tstart
-        metrics.files_interface_open_time[filename] = sum_interface_open_time
-        
-        for record in interface_close_records[filename]:
-            sum_interface_close_time = record.tend - record.tstart
-        metrics.files_interface_close_time[filename] = sum_interface_close_time
-
-        
-        if sum_pure_meta_write_time != 0:
-            e2e_time = metrics.files_pure_write_time.get(filename, 0) + sum_pure_meta_write_time
-            metrics.files_pure_e2e_write_bw[filename] = metrics.files_bytes_written[filename] / e2e_time / (1024*1024)
-
-        if sum_pure_meta_read_time != 0:
-            e2e_time = metrics.files_pure_read_time.get(filename, 0) + sum_pure_meta_read_time
-            metrics.files_pure_e2e_read_bw[filename] = metrics.files_bytes_read[filename] / e2e_time / (1024*1024)
-
-        if sum_interface_meta_write_time != 0:
-            e2e_time = metrics.files_interface_write_time.get(filename, 0) + metrics.files_pure_write_time.get(filename, 0) + sum_interface_meta_write_time
-            metrics.files_interface_e2e_write_bw[filename] = metrics.files_bytes_written[filename] / e2e_time / (1024*1024)
-
-        if sum_interface_meta_read_time != 0:
-            e2e_time = metrics.files_interface_read_time.get(filename, 0) + metrics.files_pure_read_time.get(filename, 0) + sum_interface_meta_read_time
-            metrics.files_interface_e2e_read_bw[filename] = metrics.files_bytes_read[filename] / e2e_time / (1024*1024)
-        
-
-# for each rank, gets the tstart of the first open before write / read respectively
-# and the tend of the last close after write / read respectively
-# only_pure determines, if its the timestamps of posix file open / close or mpi file open / close
-# the timestamps are then used to determine which file operations of each rank belong to
-# e2e_write_bw / e2e_read_bw
-def file_open_close_records(reader, only_pure: bool):
-    func_list = reader.funcs
-    ranks = reader.GM.total_ranks
-    meta_read_records = {}
-    meta_write_records = {}
-    all_open_records = {}
-    all_close_records = {}
-
-    for rank in range(ranks):
-        open_records = {}
-        close_records = {}
-        write_records = {}
-        read_records = {}
-        other_meta_records = {}
-        for i in range(reader.LMs[rank].total_records):
-            record = reader.records[rank][i]
-            record.rank = rank
-
-            # ignore user functions
-            if record.func_id >= len(func_list): continue
-
-            func = func_list[record.func_id]
-
-            # either get only get posix open / close or only mpi open / close
-            if only_pure:
-                if ignore_funcs(func): continue
-            else:
-                if not "MPI" in func and not "H5" in func: continue
+        for rank in range(ranks):
+            print(f"Rank {rank} ({ranks} total)")
+            # the meta time gets partitioned more than necessary for the overall meta time
+            # however for possible future metrics (i.e. max open / close time) it stays that way for now
+            writes = sorted([x for x in write_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            reads  = sorted([x for x in read_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            opens  = sorted([x for x in open_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            closes = sorted([x for x in close_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            seeks  = sorted([x for x in seek_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            syncs  = sorted([x for x in sync_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            set_sizes = sorted([x for x in set_size_intervals[filename] if x[0] == rank], key=lambda x: x[1])
             
-            args = record.args_to_strs()
-            filename, record_type = get_record_filename_type(func, args)
-            if not filename: continue
-            
-            if record_type == "close":
-                if filename not in close_records:
-                    close_records[filename] = []
-                close_records[filename].append(record)
-            elif record_type == "open":
-                if filename not in open_records:
-                    open_records[filename] = []
-                open_records[filename].append(record)
-            elif record_type == "read":
-                if filename not in read_records:
-                    read_records[filename] = []
-                read_records[filename].append(record)
-            elif record_type == "write":
-                if filename not in write_records:
-                    write_records[filename] = []
-                write_records[filename].append(record)
-            else:
-                if filename not in other_meta_records:
-                    other_meta_records[filename] = []
-                other_meta_records[filename].append(record)
-        
-        for filename in open_records:
-            open_records[filename] = sorted(open_records[filename] , key=lambda x: x.tstart)
-            close_records[filename] = sorted(close_records[filename], key=lambda x: x.tstart)
-            write_records[filename] = sorted(write_records[filename], key=lambda x: x.tstart)
-            read_records[filename] = sorted(read_records[filename] , key=lambda x: x.tstart)
+            write_metaops = assign_metaops(writes, opens.copy(), closes.copy(), seeks.copy(), syncs.copy(), set_sizes.copy(), True)
+            read_metaops = assign_metaops(reads, opens.copy(), closes.copy(), seeks.copy(), syncs.copy(), set_sizes.copy(), False)
 
-            write_start, write_end, read_start, read_end = get_rank_timestamps(open_records[filename],
-                                                                               close_records[filename],
-                                                                               write_records[filename],
-                                                                               read_records[filename])
-            # TODO: this approach only works if there are seperate write / read phases
-            # --> is it even possible to clearly assign for each file open / close if it belong to a write / read?
-            meta_records = open_records.get(filename, []) + close_records.get(filename, []) + other_meta_records.get(filename, [])
-            meta_write = [x for x in meta_records if x.tstart >= write_start and x.tend <= write_end]
-            meta_read = [x for x in meta_records if x.tstart >= read_start and x.tend <= read_end]
+            open_w_times[rank]  = get_duration_sum(write_metaops['open'])
+            close_w_times[rank] = get_duration_sum(write_metaops['close'])
+            meta_w_times[rank]  = get_duration_sum(write_metaops['other']) + open_w_times[rank] + close_w_times[rank]
+            e2e_w_times[rank]   = write_times[rank] + meta_w_times[rank]
 
-            meta_write_records[filename] = meta_write_records.get(filename, []) + meta_write
-            meta_read_records[filename] = meta_read_records.get(filename, []) + meta_read
+            open_r_times[rank]  = get_duration_sum(read_metaops['open'])
+            close_r_times[rank] = get_duration_sum(read_metaops['close'])
+            meta_r_times[rank]  = get_duration_sum(read_metaops['other']) + open_r_times[rank] + close_r_times[rank]
+            e2e_r_times[rank]   = read_times[rank] + meta_r_times[rank]
 
-            all_open_records[filename] = all_open_records.get(filename, []) + open_records[filename]
-            all_close_records[filename] = all_close_records.get(filename, []) + close_records[filename]
-    
-    return meta_write_records, meta_read_records, all_open_records, all_close_records
-        
+        max_e2e_write = max(e2e_w_times)
+        max_e2e_read = max(e2e_r_times)
+        bytes_written = metricObj.metrics[filename]['write']['bytes']
+        bytes_read = metricObj.metrics[filename]['read']['bytes']
 
-def get_record_filename_type(func, args):
+        if filename not in metricObj.metrics: metricObj.add_filename(filename)
 
-    if "fwrite" in func:
-        return args[3], "write"
-    if "fread" in func:
-        return args[3], "read"
-    if "write" in func:
-        return args[0], "write"
-    if "read" in func:
-        return args[0], "read"
-    if "open" in func:
-        return args[0], "open"
-    if "close" in func:
-        return args[0], "close"
-    if "sync" in func or "seek" in func:
-        return args[0], "other"
-    return "", ""
+        if max_e2e_write != 0 and bytes_written != 0:
+            metricObj.metrics[filename]['write'][meta_time_key] = max_e2e_write
+            metricObj.metrics[filename]['write'][e2e_bw_key] = bytes_written / max_e2e_write / (1024 * 1024)
+
+        if max_e2e_read != 0 and bytes_read != 0:
+            metricObj.metrics[filename]['read'][meta_time_key] = max_e2e_read
+            metricObj.metrics[filename]['read'][e2e_bw_key] = bytes_read / max_e2e_read / (1024 * 1024)
 
 
-def get_rank_timestamps(open, close, write, read):
-    last_write = write[-1]
-    first_read = read[0]
-
-    first_write_open = open[0]
-    last_write_close = next(filter(lambda x: x.tstart > last_write.tend and x.tend < first_read.tstart, close), close[0])
-
-    tmp_opens = [x for x in open if x.tstart > last_write_close.tend and x.tend < first_read.tstart]
-
-    first_read_open = max(tmp_opens, key=lambda x: x.tstart, default=open[-1])
-    last_read_close = close[-1]
-
-    return first_write_open.tstart, last_write_close.tend, first_read_open.tstart, last_read_close.tend
-
-
-def aggregate_file_metrics(metrics: Metrics):
-    # TODO: check if further logic is required to choose files for aggregation
-    # e.g. if temporary mpi files are in metrics.unique_files, that would
-    # distort the aggregation results
-    if len(metrics.files_bytes_written) != 0:
-        metrics.total_bytes_written = sum(metrics.files_bytes_written.values())
-
-    if len(metrics.files_bytes_read) != 0:
-        metrics.total_bytes_read = sum(metrics.files_bytes_read.values())
-
-    if len(metrics.files_pure_write_bw) != 0:
-        metrics.min_pure_write_bw = min(metrics.files_pure_write_bw.values())
-        metrics.max_pure_write_bw = max(metrics.files_pure_write_bw.values())
-        metrics.avg_pure_write_bw = sum(metrics.files_pure_write_bw.values()) / len(metrics.files_pure_write_bw)
-    
-    if len(metrics.files_pure_read_bw) != 0:
-        metrics.min_pure_read_bw = min(metrics.files_pure_read_bw.values())
-        metrics.max_pure_read_bw = max(metrics.files_pure_read_bw.values())
-        metrics.avg_pure_read_bw = sum(metrics.files_pure_read_bw.values()) / len(metrics.files_pure_read_bw)
-
-    if len(metrics.files_interface_write_bw) != 0:
-        metrics.min_interface_write_bw = min(metrics.files_interface_write_bw.values())
-        metrics.max_interface_write_bw = max(metrics.files_interface_write_bw.values())
-        metrics.avg_interface_write_bw = sum(metrics.files_interface_write_bw.values()) / len(metrics.files_interface_write_bw)
-
-    if len(metrics.files_interface_read_bw) != 0:
-        metrics.min_interface_read_bw = min(metrics.files_interface_read_bw.values())
-        metrics.max_interface_read_bw = max(metrics.files_interface_read_bw.values())
-        metrics.avg_interface_read_bw = sum(metrics.files_interface_read_bw.values()) / len(metrics.files_interface_read_bw)
-
-    if len(metrics.files_pure_e2e_write_bw) != 0:
-        metrics.min_pure_e2e_write_bw = min(metrics.files_pure_e2e_write_bw.values())
-        metrics.max_pure_e2e_write_bw = max(metrics.files_pure_e2e_write_bw.values())
-        metrics.avg_pure_e2e_write_bw = sum(metrics.files_pure_e2e_write_bw.values()) / len(metrics.files_pure_e2e_write_bw)
-    
-    if len(metrics.files_pure_e2e_read_bw) != 0:
-        metrics.min_pure_e2e_read_bw = min(metrics.files_pure_e2e_read_bw.values())
-        metrics.max_pure_e2e_read_bw = max(metrics.files_pure_e2e_read_bw.values())
-        metrics.avg_pure_e2e_read_bw = sum(metrics.files_pure_e2e_read_bw.values()) / len(metrics.files_pure_e2e_read_bw)
-
-    if len(metrics.files_interface_e2e_write_bw) != 0:
-        metrics.min_interface_e2e_write_bw = min(metrics.files_interface_e2e_write_bw.values())
-        metrics.max_interface_e2e_write_bw = max(metrics.files_interface_e2e_write_bw.values())
-        metrics.avg_interface_e2e_write_bw = sum(metrics.files_interface_e2e_write_bw.values()) / len(metrics.files_interface_e2e_write_bw)
-    
-    if len(metrics.files_interface_e2e_read_bw) != 0:
-        metrics.min_interface_e2e_read_bw = min(metrics.files_interface_e2e_read_bw.values())
-        metrics.max_interface_e2e_read_bw = max(metrics.files_interface_e2e_read_bw.values())
-        metrics.avg_interface_e2e_read_bw = sum(metrics.files_interface_e2e_read_bw.values()) / len(metrics.files_interface_e2e_read_bw)
-
-    if len(metrics.files_pure_write_time) != 0:
-        metrics.min_pure_write_time = min(metrics.files_pure_write_time.values())
-        metrics.max_pure_write_time = max(metrics.files_pure_write_time.values())
-        metrics.avg_pure_write_time = sum(metrics.files_pure_write_time.values()) / len(metrics.files_pure_write_time)
-
-    if len(metrics.files_pure_read_time) != 0:
-        metrics.min_pure_read_time = min(metrics.files_pure_read_time.values())
-        metrics.max_pure_read_time = max(metrics.files_pure_read_time.values())
-        metrics.avg_pure_read_time = sum(metrics.files_pure_read_time.values()) / len(metrics.files_pure_read_time)
-
-    if len(metrics.files_interface_write_time) != 0:
-        metrics.min_interface_write_time = min(metrics.files_interface_write_time.values())
-        metrics.max_interface_write_time = max(metrics.files_interface_write_time.values())
-        metrics.avg_interface_write_time = sum(metrics.files_interface_write_time.values()) / len(metrics.files_interface_write_time)
-
-    if len(metrics.files_interface_read_time) != 0:
-        metrics.min_interface_read_time = min(metrics.files_interface_read_time.values())
-        metrics.max_interface_read_time = max(metrics.files_interface_read_time.values())
-        metrics.avg_interface_read_time = sum(metrics.files_interface_read_time.values()) / len(metrics.files_interface_read_time)
-
-    if len(metrics.files_pure_meta_write_time) != 0:
-        metrics.min_pure_meta_write_time = min(metrics.files_pure_meta_write_time.values())
-        metrics.max_pure_meta_write_time = max(metrics.files_pure_meta_write_time.values())
-        metrics.avg_pure_meta_write_time = sum(metrics.files_pure_meta_write_time.values()) / len(metrics.files_pure_meta_write_time)
-
-    if len(metrics.files_pure_meta_read_time) != 0:
-        metrics.min_pure_meta_read_time = min(metrics.files_pure_meta_read_time.values())
-        metrics.max_pure_meta_read_time = max(metrics.files_pure_meta_read_time.values())
-        metrics.avg_pure_meta_read_time = sum(metrics.files_pure_meta_read_time.values()) / len(metrics.files_pure_meta_read_time)
-
-    if len(metrics.files_interface_meta_write_time) != 0:
-        metrics.min_interface_meta_write_time = min(metrics.files_interface_meta_write_time.values())
-        metrics.max_interface_meta_write_time = max(metrics.files_interface_meta_write_time.values())
-        metrics.avg_interface_meta_write_time = sum(metrics.files_interface_meta_write_time.values()) / len(metrics.files_interface_meta_write_time)
-
-    if len(metrics.files_interface_meta_read_time) != 0:
-        metrics.min_interface_meta_read_time = min(metrics.files_interface_meta_read_time.values())
-        metrics.max_interface_meta_read_time = max(metrics.files_interface_meta_read_time.values())
-        metrics.avg_interface_meta_read_time = sum(metrics.files_interface_meta_read_time.values()) / len(metrics.files_interface_meta_read_time)
-
-    if len(metrics.files_posix_open_time) != 0:
-        metrics.min_posix_open_time = min(metrics.files_posix_open_time.values())
-        metrics.max_posix_open_time = max(metrics.files_posix_open_time.values())
-        metrics.avg_posix_open_time = sum(metrics.files_posix_open_time.values()) / len(metrics.files_posix_open_time)
-
-    if len(metrics.files_posix_close_time) != 0:
-        metrics.min_posix_close_time = min(metrics.files_posix_close_time.values())
-        metrics.max_posix_close_time = max(metrics.files_posix_close_time.values())
-        metrics.avg_posix_close_time = sum(metrics.files_posix_close_time.values()) / len(metrics.files_posix_close_time)
-
-    if len(metrics.files_interface_open_time) != 0:
-        metrics.min_interface_open_time = min(metrics.files_interface_open_time.values())
-        metrics.max_interface_open_time = max(metrics.files_interface_open_time.values())
-        metrics.avg_interface_open_time = sum(metrics.files_interface_open_time.values()) / len(metrics.files_interface_open_time)
-
-    if len(metrics.files_interface_close_time) != 0:
-        metrics.min_interface_close_time = min(metrics.files_interface_close_time.values())
-        metrics.max_interface_close_time = max(metrics.files_interface_close_time.values())
-        metrics.avg_interface_close_time = sum(metrics.files_interface_close_time.values()) / len(metrics.files_interface_close_time)
+def print_operation(file, op):
+    file.write(f"\tBytes: {op['bytes']} \n")
+    file.write(f"\tPOSIX Level Metrics:\n")
+    file.write(f"\t\tPure Operation Time: {op['posix_op_time']} \n")
+    file.write(f"\t\tPure Operation Bandwidth (MiB/s): {op['posix_pure_bw']} \n")
+    file.write(f"\t\tE2E Operation Time: {op['posix_meta_time']} \n")
+    file.write(f"\t\tE2E Operation Bandwidth (MiB/s): {op['posix_e2e_bw']} \n")
+    file.write(f"\tMPIIO Level Metrics:\n")
+    file.write(f"\t\tPure Operation Time: {op['mpiio_op_time']} \n")
+    file.write(f"\t\tPure Operation Bandwidth (MiB/s): {op['mpiio_pure_bw']} \n")
+    file.write(f"\t\tE2E Operation Time: {op['mpiio_meta_time']} \n")
+    file.write(f"\t\tE2E Operation Bandwidth (MiB/s): {op['mpiio_e2e_bw']} \n\n")
 
 
+def ignore_filename(filename, metricObj: MetricObject):
+    if filename == "overall":
+        return True
+    return all(x == 0 for x in metricObj.metrics[filename]['write'].values()) and all(x == 0 for x in metricObj.metrics[filename]['read'].values())
 
-def generate_report(reader, output_path):
-
-    output_path = os.path.abspath(output_path)
-    if output_path[-5:] != ".html":
-        output_path += ".html"
-
-    htmlWriter = HTMLWriter(output_path)
-
-    intervals = build_offset_intervals(reader)
-
-    function_layers(reader, htmlWriter)
-    function_times(reader, htmlWriter)
-
-    overall_io_activities(reader, htmlWriter)
-
-    htmlWriter.write_html()
 
 
 def print_metrics(reader, output_path):
-    metrics = Metrics()
-    offset_intervals = build_offset_intervals(reader)
-    interface_intervals = build_interface_intervals(reader)
+    start = datetime.now()
+    metrics = MetricObject(reader)
+    ranks = reader.GM.total_ranks
 
-    pure_file_metrics(offset_intervals, metrics)
-    interface_file_metrics(interface_intervals, metrics)
-    e2e_file_metrics(reader, metrics)
-    aggregate_file_metrics(metrics)
+    posix_intervals = build_intervals(reader, True)
+    mpiio_intervals = build_intervals(reader, False)
 
+    posix_write_times, posix_read_times = op_time_pure_bw(posix_intervals, ranks, metrics, True)
+    meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_write_times, posix_read_times, True)
+
+    mpiio_write_times, mpiio_read_times = op_time_pure_bw(mpiio_intervals, ranks, metrics, False)
+    meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_write_times, mpiio_read_times, False)
+
+    
     with open(output_path, "w") as f:
+        f.write(f"Overall Metrics:\n")
+        f.write(f"Total bytes written: {metrics.metrics['overall']['write']['bytes_total']}\n")
+        f.write(f"Total bytes read: {metrics.metrics['overall']['read']['bytes_total']}\n")
 
-        f.write("Overall Benchmark Metrics: \n\n")
+        f.write(f"Per File Metrics: \n\n")
+        for filename in metrics.metrics:
+            if ignore_filename(filename, metrics): continue
+            f.write(f"File: {filename}\n")
+            f.write(f"Write:\n")
+            print_operation(f, metrics.metrics[filename]['write'])
+            f.write(f"Read:\n")
+            print_operation(f, metrics.metrics[filename]['read'])
+    stop = datetime.now()
+    duration = stop - start
+    print(f"[recorder-pm]: Total time: {duration}")
 
-        f.write("Write Metrics:\n")
-        f.write(f"Total Bytes: {metrics.total_bytes_written} \n\n")
-
-        f.write(f"POSIX Level: (min / max / avg) \n")
-        f.write(f"\tBW: {metrics.min_pure_write_bw} / {metrics.max_pure_write_bw} / {metrics.avg_pure_write_bw} \n")
-        f.write(f"\tE2E BW: {metrics.min_pure_e2e_write_bw} / {metrics.max_pure_e2e_write_bw} / {metrics.avg_pure_e2e_write_bw} \n")
-        f.write(f"\twrite time: {metrics.min_pure_write_time} / {metrics.max_pure_write_time} / {metrics.avg_pure_write_time} \n")
-        f.write(f"\tmetadata operations time: {metrics.min_pure_meta_write_time} / {metrics.max_pure_meta_write_time} / {metrics.avg_pure_meta_write_time} \n")
-        f.write(f"\tfile open time (w & r): {metrics.min_posix_open_time} / {metrics.max_posix_open_time} / {metrics.avg_posix_open_time} \n")
-        f.write(f"\tfile close time (w & r): {metrics.min_posix_close_time} / {metrics.max_posix_close_time} / {metrics.avg_posix_close_time} \n\n")
-
-        f.write(f"Interface Level: (min / max / avg) \n")
-        f.write(f"\tBW: {metrics.min_interface_write_bw} / {metrics.max_interface_write_bw} / {metrics.avg_interface_write_bw} \n")
-        f.write(f"\tE2E BW: {metrics.min_interface_e2e_write_bw} / {metrics.max_interface_e2e_write_bw} / {metrics.avg_interface_e2e_write_bw} \n")
-        f.write(f"\twrite time: {metrics.min_interface_write_time} / {metrics.max_interface_write_time} / {metrics.avg_interface_write_time} \n")
-        f.write(f"\tmetadata operations time: {metrics.min_interface_meta_write_time} / {metrics.max_interface_meta_write_time} / {metrics.avg_interface_meta_write_time} \n")
-        f.write(f"\tfile open time (w & r): {metrics.min_interface_open_time} / {metrics.max_interface_open_time} / {metrics.avg_interface_open_time} \n")
-        f.write(f"\tfile close time (w & r): {metrics.min_interface_close_time} / {metrics.max_interface_close_time} / {metrics.avg_interface_close_time} \n\n")
         
 
 if __name__ == "__main__":
