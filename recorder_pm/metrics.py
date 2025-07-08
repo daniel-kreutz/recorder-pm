@@ -10,8 +10,36 @@ class MetricObject(RecorderReader):
         # the structure for each metrics[filename] can be seen in add_filename
         self.metrics = {
             "overall": {
-                "write": {"bytes_total": 0},
-                "read": {"bytes_total": 0}
+                "write": {
+                    "total_bytes": 0,               
+                    "max_posix_op_time": 0.0,       # max of file posix_op_time (-> max op time of all ranks and files)
+                    "max_posix_meta_time": 0.0,     # analogous to the above
+                    "agg_posix_pure_bw": 0.0,       # posix_pure_bw aggregated over all files (bytes / max_posix_op_time)
+                    "agg_posix_e2e_bw": 0.0,        # analogous to the above
+                    "avg_posix_pure_bw": 0.0,       # posix_pure_bw over all files as the average over all file posix_pure_bw
+                    "avg_posix_e2e_bw": 0.0,        # analogous to the above
+                    "max_mpiio_op_time": 0.0,       # rest analogous to the above posix metrics
+                    "max_mpiio_meta_time": 0.0,
+                    "agg_mpiio_pure_bw": 0.0,
+                    "agg_mpiio_e2e_bw": 0.0,
+                    "avg_mpiio_pure_bw": 0.0,
+                    "avg_mpiio_e2e_bw": 0.0
+                },
+                "read": {
+                    "total_bytes": 0,
+                    "max_posix_op_time": 0.0,
+                    "max_posix_meta_time": 0.0,
+                    "agg_posix_pure_bw": 0.0,
+                    "agg_posix_e2e_bw": 0.0,
+                    "avg_posix_pure_bw": 0.0,
+                    "avg_posix_e2e_bw": 0.0,
+                    "max_mpiio_op_time": 0.0,
+                    "max_mpiio_meta_time": 0.0,
+                    "agg_mpiio_pure_bw": 0.0,
+                    "agg_mpiio_e2e_bw": 0.0,
+                    "avg_mpiio_pure_bw": 0.0,
+                    "avg_mpiio_e2e_bw": 0.0
+                },
             }
         }
 

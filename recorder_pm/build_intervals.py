@@ -80,6 +80,8 @@ def build_intervals(reader, posix: bool):
             else:
                 filename = mpi_file_handles[args[0]]
 
+        if ignore_files(filename): continue
+
         operation = ""
         count = 0
 
@@ -113,9 +115,8 @@ def build_intervals(reader, posix: bool):
                 operation = "set_size"
             else: continue
 
-        if not ignore_files(filename):
-            if filename not in intervals:
-                intervals[filename] = []
-            intervals[filename].append([rank, record.tstart, record.tend, operation, count])
+        if filename not in intervals:
+            intervals[filename] = []
+        intervals[filename].append([rank, record.tstart, record.tend, operation, count])
 
     return intervals

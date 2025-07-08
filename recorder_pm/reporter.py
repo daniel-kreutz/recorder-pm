@@ -8,15 +8,20 @@ from datetime import datetime
 from bisect import bisect_left, bisect_right
 
 
-def filter_intervals(intervals, operations: list[str]):
-    return_intervals = {}
-    for filename in intervals:
-        return_intervals[filename] = []
-        for interval in intervals[filename]:
-            for op in operations:
-                if op == interval[3]:
-                    return_intervals[filename].append(interval)
-    return return_intervals
+#def filter_intervals(intervals, op):
+#    return_intervals = {}
+#    for filename in intervals:
+#        return_intervals[filename] = []
+#        for interval in intervals[filename]:
+#            if op == interval[3]:
+#                return_intervals[filename].append(interval)
+#    return return_intervals
+
+def filter_intervals(intervals, op):
+    return {
+        filename: [interval for interval in file_intervals if interval[3] == op]
+        for filename, file_intervals in intervals.items()
+    }
 
 
 def get_duration_sum(intervals):
@@ -27,24 +32,6 @@ def get_duration_sum(intervals):
 
 
 def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool):
-    
-    #def get_last_before(ioop, metaops):
-    #    if not metaops: return []
-    #    start = ioop[1]
-    #    for op in reversed(metaops):
-    #        if op[1] < start and op[2] < start:
-    #            return op
-    #    return []
-#
-    #
-    #def get_first_after(ioop, metaops):
-    #    if not metaops: return []
-    #    end = ioop[2]
-    #    for op in metaops:
-    #        if op[1] > end:
-    #            return op
-    #    return []
-    
 
     def get_last_before(ioop, metaops, starts):
         if not metaops: return []
@@ -76,23 +63,11 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
             return []
         return metaops[pos]
 
+
     assigned_opens = []
     assigned_closes = []
     assigned_other = []
 
-    print(f"assign_metaops CALLED for {'WRITE' if writeOps else 'READ'}")
-    op_counter = 0
-    total_ops = len(ioops)
-
-    #max_start = max(ioops, key=lambda x: x[1], default=0)
-    #min_end = min(ioops, key=lambda x: x[2], default=0)
-
-    # filter out non-relevant meta ops
-    #opens = [x for x in opens if x[2] <= max_start[1]]
-    #closes = [x for x in closes if x[1] >= min_end[2]]
-    #seeks = [x for x in seeks if x[2] <= max_start[1]]
-    #syncs = [x for x in syncs if x[1] >= min_end[2]]
-    #set_sizes = [x for x in set_sizes if x[2] <= max_start[1]]
     opens_starts = [x[1] for x in opens]
     closes_starts = [x[1] for x in closes]
     seeks_starts = [x[1] for x in seeks]
@@ -100,19 +75,9 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
     set_sizes_starts = [x[1] for x in set_sizes]
 
     for op in ioops:
-        op_counter += 1
-        for i in range(1, 6):
-            if (total_ops // 5) * i == op_counter:
-                print(f"current op: {op[3]}\t({op_counter} / {total_ops})")
-                break
-        
-
         last_open = get_last_before(op, opens, opens_starts)
-        #print("last open done")
         last_seek = get_last_before(op, seeks, seeks_starts)
-        #print("last seek done")
         first_close = get_first_after(op, closes, closes_starts)
-        #print("first close done")
 
         if last_open and last_open not in assigned_opens:
             assigned_opens.append(last_open)
@@ -126,12 +91,9 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
 
             if first_sync and first_sync not in assigned_other:
                 assigned_other.append(first_sync)
-            #print("first sync done")
             if last_set_size and last_set_size not in assigned_other:
                 assigned_other.append(last_set_size)
-            #print("last set size done")
-        #print("assigned all metaops for current op\n")
-    print(f"assign_metaops DONE for {'WRITE' if writeOps else 'READ'}")
+
     return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
 
      
@@ -187,31 +149,27 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
             metricObj.metrics[filename]['write'][pure_bw_key] = metricObj.metrics[filename]['write']['bytes'] / max_write_time / (1024*1024)
 
     if posix:
-        metricObj.metrics['overall']['write']['bytes_total'] = total_write_size
-        metricObj.metrics['overall']['read']['bytes_total'] = total_read_size
+        metricObj.metrics['overall']['write']['total_bytes'] = total_write_size
+        metricObj.metrics['overall']['read']['total_bytes'] = total_read_size
         
     return files_write_times, files_read_times
 
 
 def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_times, files_read_times, posix: bool):
-    write_intervals = filter_intervals(intervals, ['write'])
-    read_intervals  = filter_intervals(intervals, ['read'])
-    open_intervals  = filter_intervals(intervals, ['open'])
-    close_intervals = filter_intervals(intervals, ['close'])
+    write_intervals = filter_intervals(intervals, 'write')
+    read_intervals  = filter_intervals(intervals, 'read')
+    open_intervals  = filter_intervals(intervals, 'open')
+    close_intervals = filter_intervals(intervals, 'close')
     # these intervals are not necessarily relevant, however in this case filter_intervals just returns an empty list
-    seek_intervals  = filter_intervals(intervals, ['seek'])
-    sync_intervals  = filter_intervals(intervals, ['sync'])
-    set_size_intervals = filter_intervals(intervals, ['set_size'])
+    seek_intervals  = filter_intervals(intervals, 'seek')
+    sync_intervals  = filter_intervals(intervals, 'sync')
+    set_size_intervals = filter_intervals(intervals, 'set_size')
 
     meta_time_key = "posix_meta_time" if posix else "mpiio_meta_time"
     e2e_bw_key = "posix_e2e_bw" if posix else "mpiio_e2e_bw"
 
-    file_counter = 0
-    total_files = len(intervals)
-
     for filename in intervals:
-        file_counter += 1
-        print(f"File {file_counter} / {total_files}")
+
         meta_w_times  = [0.0] * ranks
         open_w_times  = [0.0] * ranks
         close_w_times = [0.0] * ranks
@@ -225,7 +183,6 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_time
         read_times = files_read_times[filename]
         
         for rank in range(ranks):
-            print(f"Rank {rank} ({ranks} total)")
             # the meta time gets partitioned more than necessary for the overall meta time
             # however for possible future metrics (i.e. max open / close time) it stays that way for now
             writes = sorted([x for x in write_intervals[filename] if x[0] == rank], key=lambda x: x[1])
@@ -236,8 +193,8 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_time
             syncs  = sorted([x for x in sync_intervals[filename] if x[0] == rank], key=lambda x: x[1])
             set_sizes = sorted([x for x in set_size_intervals[filename] if x[0] == rank], key=lambda x: x[1])
             
-            write_metaops = assign_metaops(writes, opens.copy(), closes.copy(), seeks.copy(), syncs.copy(), set_sizes.copy(), True)
-            read_metaops = assign_metaops(reads, opens.copy(), closes.copy(), seeks.copy(), syncs.copy(), set_sizes.copy(), False)
+            write_metaops = assign_metaops(writes, opens, closes, seeks, syncs, set_sizes, True)
+            read_metaops = assign_metaops(reads, opens, closes, seeks, syncs, set_sizes, False)
 
             open_w_times[rank]  = get_duration_sum(write_metaops['open'])
             close_w_times[rank] = get_duration_sum(write_metaops['close'])
@@ -265,18 +222,69 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_time
             metricObj.metrics[filename]['read'][e2e_bw_key] = bytes_read / max_e2e_read / (1024 * 1024)
 
 
-def print_operation(file, op):
+def aggregate_metrics(metricObj: MetricObject, write: bool):
+
+    def set_agg_metrics(metricObj: MetricObject, op_key, file_metrics, posix: bool):
+        total_bytes = metricObj.metrics['overall'][op_key]['total_bytes']
+        level = "posix" if posix else "mpiio"
+    
+        max_op_time = max(x[level + "_op_time"] for x in file_metrics)
+        max_meta_time = max(x[level + "_meta_time"] for x in file_metrics)
+        metricObj.metrics['overall'][op_key]["max_" + level + "_op_time"] = max_op_time
+        metricObj.metrics['overall'][op_key]["max_" + level + "_meta_time"] = max_meta_time
+        if max_op_time != 0:
+            metricObj.metrics['overall'][op_key]["agg_" + level + "_pure_bw"] = total_bytes / max_op_time / (1024*1024)  # MiB/s
+        if max_meta_time != 0:
+            metricObj.metrics['overall'][op_key]["agg_" + level + "_e2e_bw"] = total_bytes / max_meta_time / (1024*1024) # MiB/s
+        if len(file_metrics) != 0:
+            metricObj.metrics['overall'][op_key]["avg_" + level + "_pure_bw"] = sum(x[level + "_pure_bw"] for x in file_metrics) / len(file_metrics)
+            metricObj.metrics['overall'][op_key]["avg_" + level + "_e2e_bw"] = sum(x[level + "_e2e_bw"] for x in file_metrics) / len(file_metrics)
+
+    op_key = "write" if write else "read"
+    file_metrics = [metricObj.metrics[x][op_key] for x in metricObj.metrics if x != 'overall']
+    set_agg_metrics(metricObj, op_key, file_metrics, True)
+    set_agg_metrics(metricObj, op_key, file_metrics, False)
+
+
+
+def print_overall_operation(file, op):
+    max_text_len = 49
+    decimals = 17
+    max_val_len = max(len(str(int(op[x]))) for x in op if x != 'total_bytes') + decimals + 1
+
+    file.write(f"\tTotal Bytes: {op['total_bytes']} \n")
+    file.write(f"\tPOSIX Level Metrics:\n")
+    file.write(f"\t\t{'Max Pure Operation Time (s)':<{max_text_len}}: {op['max_posix_op_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth with Max Op Time (MiB/s)':<{max_text_len}}: {op['agg_posix_pure_bw']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth as File BW Avg (MiB/s)':<{max_text_len}}: {op['avg_posix_pure_bw']:>{max_val_len}.{decimals}f} \n\n")
+    file.write(f"\t\t{'Max E2E Operation Time (s)':<{max_text_len}}: {op['max_posix_meta_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth with Max Op Time (MiB/s)':<{max_text_len}}: {op['agg_posix_e2e_bw']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth as File BW Avg (MiB/s)':<{max_text_len}}: {op['avg_posix_e2e_bw']:>{max_val_len}.{decimals}f} \n\n")
+    file.write(f"\tMPIIO Level Metrics:\n")
+    file.write(f"\t\t{'Max Pure Operation Time (s)':<{max_text_len}}: {op['max_mpiio_op_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth with Max Op Time (MiB/s)':<{max_text_len}}: {op['agg_mpiio_pure_bw']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth as File BW Avg (MiB/s)':<{max_text_len}}: {op['avg_mpiio_pure_bw']:>{max_val_len}.{decimals}f} \n\n")
+    file.write(f"\t\t{'Max E2E Operation Time (s)':<{max_text_len}}: {op['max_mpiio_meta_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth with Max Op Time (MiB/s)':<{max_text_len}}: {op['agg_mpiio_e2e_bw']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth as File BW Avg (MiB/s)':<{max_text_len}}: {op['avg_mpiio_e2e_bw']:>{max_val_len}.{decimals}f} \n\n")
+
+
+def print_file_operation(file, op):
+    max_text_len = 32
+    decimals = 17
+    max_val_len = max(len(str(int(op[x]))) for x in op if x != 'bytes') + decimals + 1
+    
     file.write(f"\tBytes: {op['bytes']} \n")
     file.write(f"\tPOSIX Level Metrics:\n")
-    file.write(f"\t\tPure Operation Time: {op['posix_op_time']} \n")
-    file.write(f"\t\tPure Operation Bandwidth (MiB/s): {op['posix_pure_bw']} \n")
-    file.write(f"\t\tE2E Operation Time: {op['posix_meta_time']} \n")
-    file.write(f"\t\tE2E Operation Bandwidth (MiB/s): {op['posix_e2e_bw']} \n")
+    file.write(f"\t\t{'Pure Operation Time (s)':<{max_text_len}}: {op['posix_op_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth (MiB/s)':<{max_text_len}}: {op['posix_pure_bw']:>{max_val_len}.{decimals}f} \n\n")
+    file.write(f"\t\t{'E2E Operation Time (s)':<{max_text_len}}: {op['posix_meta_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth (MiB/s)':<{max_text_len}}: {op['posix_e2e_bw']:>{max_val_len}.{decimals}f} \n\n")
     file.write(f"\tMPIIO Level Metrics:\n")
-    file.write(f"\t\tPure Operation Time: {op['mpiio_op_time']} \n")
-    file.write(f"\t\tPure Operation Bandwidth (MiB/s): {op['mpiio_pure_bw']} \n")
-    file.write(f"\t\tE2E Operation Time: {op['mpiio_meta_time']} \n")
-    file.write(f"\t\tE2E Operation Bandwidth (MiB/s): {op['mpiio_e2e_bw']} \n\n")
+    file.write(f"\t\t{'Pure Operation Time (s)':<{max_text_len}}: {op['mpiio_op_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'Pure Operation Bandwidth (MiB/s)':<{max_text_len}}: {op['mpiio_pure_bw']:>{max_val_len}.{decimals}f} \n\n")
+    file.write(f"\t\t{'E2E Operation Time (s)':<{max_text_len}}: {op['mpiio_meta_time']:>{max_val_len}.{decimals}f} \n")
+    file.write(f"\t\t{'E2E Operation Bandwidth (MiB/s)':<{max_text_len}}: {op['mpiio_e2e_bw']:>{max_val_len}.{decimals}f} \n\n")
 
 
 def ignore_filename(filename, metricObj: MetricObject):
@@ -300,23 +308,33 @@ def print_metrics(reader, output_path):
     mpiio_write_times, mpiio_read_times = op_time_pure_bw(mpiio_intervals, ranks, metrics, False)
     meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_write_times, mpiio_read_times, False)
 
+    aggregate_metrics(metrics, True)
+    aggregate_metrics(metrics, False)
+
     
     with open(output_path, "w") as f:
+        f.write(f"{'=' * 50}\n")
         f.write(f"Overall Metrics:\n")
-        f.write(f"Total bytes written: {metrics.metrics['overall']['write']['bytes_total']}\n")
-        f.write(f"Total bytes read: {metrics.metrics['overall']['read']['bytes_total']}\n")
+        f.write(f"{'=' * 50}\n")
+        f.write("Write:\n")
+        print_overall_operation(f, metrics.metrics['overall']['write'])
+        f.write("Read:\n")
+        print_overall_operation(f, metrics.metrics['overall']['read'])
 
-        f.write(f"Per File Metrics: \n\n")
+        f.write(f"\n{'=' * 50}\n")
+        f.write(f"Per File Metrics: \n")
+        f.write(f"{'=' * 50}")
         for filename in metrics.metrics:
             if ignore_filename(filename, metrics): continue
+            f.write(f"\n{'-' * (len(filename) + 6)}\n")
             f.write(f"File: {filename}\n")
             f.write(f"Write:\n")
-            print_operation(f, metrics.metrics[filename]['write'])
+            print_file_operation(f, metrics.metrics[filename]['write'])
             f.write(f"Read:\n")
-            print_operation(f, metrics.metrics[filename]['read'])
+            print_file_operation(f, metrics.metrics[filename]['read'])
     stop = datetime.now()
     duration = stop - start
-    print(f"[recorder-pm]: Total time: {duration}")
+    print(f"[recorder-pm]: Total processing time: {duration}")
 
         
 
