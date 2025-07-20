@@ -8,9 +8,8 @@ Installation
 
 `recorder-pm` relies on Recorder to run. It can be installed via pip with
 ```shell
-pip install --user path/to/source/code/folder
+pip install --user git+https://github.com/daniel-kreutz/recorder-pm.git
 ```
-
 
 
 Usage
