@@ -1,9 +1,9 @@
 recorder-viz
 =============
 
-This is a python package which contains tools for processing [Recorder](https://github.com/uiuc-hpc/Recorder) traces.
+This is a python package for calculating performance metrics with [Recorder](https://github.com/uiuc-hpc/Recorder) traces.
 
-Installation and Visualization
+Installation
 -------------
 
 `recorder-pm` relies on Recorder to run. It can be installed via pip with
