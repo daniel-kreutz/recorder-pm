@@ -96,10 +96,60 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
 
     return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
 
+
+def get_file_bytes(intervals, byte_dict, posix: bool):
+    level = "posix" if posix else "mpiio"
+
+    for filename in intervals:
+        if filename not in byte_dict:
+            byte_dict[filename] = {
+                "write": {
+                    "posix": 0.0,
+                    "mpiio": 0.0},
+                "read": {
+                    "posix": 0.0,
+                    "mpiio": 0.0}
+                }
+        sum_write_size = 0
+        sum_read_size = 0
+
+        for interval in intervals[filename]:
+            operation, io_size = interval[3], interval[4]
+
+            if operation == "read":
+                sum_read_size  += io_size
+            elif operation == "write":
+                sum_write_size += io_size
+
+        byte_dict[filename]["write"][level] = sum_write_size
+        byte_dict[filename]["read"][level] = sum_read_size
+
+
+def set_byte_counts(file_bytes, metricObj: MetricObject):
+    
+    def get_max_bytes(op_dict):
+        return max(op_dict["posix"], op_dict["mpiio"])
+    
+    total_write_bytes = 0
+    total_read_bytes = 0
+
+    for filename in file_bytes:
+        max_write_bytes = get_max_bytes(file_bytes[filename]["write"])
+        max_read_bytes = get_max_bytes(file_bytes[filename]["read"])
+
+        total_write_bytes += max_write_bytes
+        total_read_bytes += max_read_bytes
+
+        if filename not in metricObj.metrics: metricObj.add_filename(filename)
+
+        metricObj.metrics[filename]["write"]["bytes"] = max_write_bytes
+        metricObj.metrics[filename]["read"]["bytes"] = max_read_bytes
+
+    metricObj.metrics["overall"]["write"]["total_bytes"] = total_write_bytes
+    metricObj.metrics["overall"]["read"]["total_bytes"] = total_read_bytes
+
      
 def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
-    total_write_size = 0
-    total_read_size = 0
     op_time_key = "posix_op_time" if posix else "mpiio_op_time"
     pure_bw_key = "posix_pure_bw" if posix else "mpiio_pure_bw"
     files_write_times = {}
@@ -107,27 +157,20 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
     
     for filename in intervals:
 
-        sum_write_size = 0
         write_times = [0.0] * ranks
-        sum_read_size = 0
         read_times = [0.0] * ranks
 
-        # aggregate all bytes written in file
         # aggregate write / read durations for each rank seperately
         # so that only the maximum aggregate duration gets used for bw
         for interval in intervals[filename]:
-            rank, operation, io_size = interval[0], interval[3], interval[4]
+            rank, operation = interval[0], interval[3]
             duration = float(interval[2]) - float(interval[1])
 
             if operation == "read":
-                sum_read_size  += io_size
                 read_times[rank]  += duration
             elif operation == "write":
-                sum_write_size += io_size
                 write_times[rank] += duration
 
-        total_write_size += sum_write_size
-        total_read_size += sum_read_size
 
         files_write_times[filename] = write_times
         files_read_times[filename] = read_times
@@ -136,21 +179,13 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
         max_read_time = max(read_times)
         max_write_time = max(write_times)
 
-        if filename not in metricObj.metrics: metricObj.add_filename(filename)
-
         if max_read_time != 0:
-            if posix: metricObj.metrics[filename]['read']['bytes'] = sum_read_size
             metricObj.metrics[filename]['read'][op_time_key] = max_read_time
             metricObj.metrics[filename]['read'][pure_bw_key] = metricObj.metrics[filename]['read']['bytes'] / max_read_time / (1024*1024)
 
         if max_write_time != 0:
-            if posix: metricObj.metrics[filename]['write']['bytes'] = sum_write_size
             metricObj.metrics[filename]['write'][op_time_key] = max_write_time
             metricObj.metrics[filename]['write'][pure_bw_key] = metricObj.metrics[filename]['write']['bytes'] / max_write_time / (1024*1024)
-
-    if posix:
-        metricObj.metrics['overall']['write']['total_bytes'] = total_write_size
-        metricObj.metrics['overall']['read']['total_bytes'] = total_read_size
         
     return files_write_times, files_read_times
 
@@ -301,6 +336,11 @@ def print_metrics(reader, output_path):
 
     posix_intervals = build_intervals(reader, True)
     mpiio_intervals = build_intervals(reader, False)
+
+    file_bytes = {}
+    get_file_bytes(posix_intervals, file_bytes, True)
+    get_file_bytes(mpiio_intervals, file_bytes, False)
+    set_byte_counts(file_bytes, metrics)
 
     posix_write_times, posix_read_times = op_time_pure_bw(posix_intervals, ranks, metrics, True)
     meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_write_times, posix_read_times, True)

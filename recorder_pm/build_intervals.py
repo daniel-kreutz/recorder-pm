@@ -1,5 +1,22 @@
 #!/usr/bin/env python
 # encoding: utf-8
+from mpi4py import MPI
+
+def get_mpi_datatype(type_str):
+    try:
+        datatype = getattr(MPI, type_str)
+        return datatype
+    except:
+        return None
+
+
+def get_mpi_type_size(type_str):
+    datatype = get_mpi_datatype(type_str.removeprefix("MPI_"))
+    if datatype is None:
+        return 0
+    else:
+        return datatype.Get_size()
+
 
 def ignore_files(filename):
     if not filename or filename == "":
@@ -104,8 +121,16 @@ def build_intervals(reader, posix: bool):
             else: continue
         else:
             if "write" in func:
+                if "at" in func:
+                    count = int(args[3]) * get_mpi_type_size(args[4])
+                else:
+                    count = int(args[2]) * get_mpi_type_size(args[3])
                 operation = "write"
             elif "read" in func:
+                if "at" in func:
+                    count = int(args[3]) * get_mpi_type_size(args[4])
+                else:
+                    count = int(args[2]) * get_mpi_type_size(args[3])
                 operation = "read"
             elif "open" in func:
                 operation = "open"

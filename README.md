@@ -6,7 +6,7 @@ This is a python package for calculating performance metrics with [Recorder](htt
 Installation
 -------------
 
-`recorder-pm` relies on Recorder to run. It can be installed via pip with
+`recorder-pm` relies on Recorder and the mpi4py Python package to run. It can be installed via pip with
 ```shell
 pip install --user git+https://github.com/daniel-kreutz/recorder-pm.git
 ```
