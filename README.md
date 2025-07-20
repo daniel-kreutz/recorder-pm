@@ -6,11 +6,12 @@ This is a python package which contains tools for processing [Recorder](https://
 Installation and Visualization
 -------------
 
-`recorder-pm` relies on Recorder and a few python libraries to run.
-Please see the document [here](https://recorder.readthedocs.io/latest/postprocessing.html#post-processing-and-visualization).
+`recorder-pm` relies on Recorder to run. It can be installed via pip with
+```shell
+pip install --user path/to/source/code/folder
+```
 
-Below are some example graphs generated from the [FLASH](http://flash.uchicago.edu) traces.
-![example graphs](https://raw.githubusercontent.com/wangvsa/recorder-viz/main/tests/showoff.jpg)
+
 
 Usage
 -------------
