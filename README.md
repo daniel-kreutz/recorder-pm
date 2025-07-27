@@ -1,4 +1,4 @@
-recorder-viz
+recorder-pm
 =============
 
 This is a python package for calculating performance metrics with [Recorder](https://github.com/uiuc-hpc/Recorder) traces.
