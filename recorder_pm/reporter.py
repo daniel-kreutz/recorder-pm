@@ -175,10 +175,10 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
         files_write_times[filename] = write_times
         files_read_times[filename] = read_times
         
-        # bandwidth has MiB/s as unit
         max_read_time = max(read_times)
         max_write_time = max(write_times)
 
+        # bandwidth has MiB/s as unit
         if max_read_time != 0:
             metricObj.metrics[filename]['read'][op_time_key] = max_read_time
             metricObj.metrics[filename]['read'][pure_bw_key] = metricObj.metrics[filename]['read']['bytes'] / max_read_time / (1024*1024)

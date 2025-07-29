@@ -14,7 +14,7 @@ class MetricObject(RecorderReader):
                     "total_bytes": 0,               
                     "max_posix_op_time": 0.0,       # max of file posix_op_time (-> max op time of all ranks and files)
                     "max_posix_meta_time": 0.0,     # analogous to the above
-                    "agg_posix_pure_bw": 0.0,       # posix_pure_bw aggregated over all files (bytes / max_posix_op_time)
+                    "agg_posix_pure_bw": 0.0,       # posix_pure_bw aggregated over all files (total_bytes / max_posix_op_time)
                     "agg_posix_e2e_bw": 0.0,        # analogous to the above
                     "avg_posix_pure_bw": 0.0,       # posix_pure_bw over all files as the average over all file posix_pure_bw
                     "avg_posix_e2e_bw": 0.0,        # analogous to the above
@@ -25,7 +25,7 @@ class MetricObject(RecorderReader):
                     "avg_mpiio_pure_bw": 0.0,
                     "avg_mpiio_e2e_bw": 0.0
                 },
-                "read": {
+                "read": {                           # analogous to write metrics
                     "total_bytes": 0,
                     "max_posix_op_time": 0.0,
                     "max_posix_meta_time": 0.0,
