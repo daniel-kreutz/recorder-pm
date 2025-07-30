@@ -118,6 +118,10 @@ def build_intervals(reader, posix: bool):
                 operation = "seek"
             elif "sync" in func:
                 operation = "sync"
+            elif "ftruncate" in func:
+                operation = "ftruncate"
+            elif "fcntl" in func:
+                operation = "fcntl"
             else: continue
         else:
             if "write" in func:
@@ -142,6 +146,20 @@ def build_intervals(reader, posix: bool):
 
         if filename not in intervals:
             intervals[filename] = []
-        intervals[filename].append([rank, record.tstart, record.tend, operation, count])
+        intervals[filename].append([rank, record.tstart, record.tend, operation, count, func])
 
+        # debug --> REMOVE func FROM INTERVAL
+    """
+    if not posix:
+        for fn in intervals:
+            print(f"DEBUG File: {fn}")
+            for rank in range(ranks):
+                rank_list = [x for x in intervals[fn] if x[0] == rank]
+                print(f"RANK {rank}")
+                print(f"File: {fn}")
+                print(f"Func Count: {len(rank_list)}")
+                print(f"Func Names:")
+                print([x[5] for x in rank_list])
+                print("\n")
+    """
     return intervals

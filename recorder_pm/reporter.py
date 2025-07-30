@@ -36,21 +36,21 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
     def get_last_before(ioop, metaops, starts):
         if not metaops: return []
         
-        start = ioop[1]
-        pos = bisect_left(starts, start)
+        op_start = ioop[1]
+        pos = bisect_left(starts, op_start)
         if pos >= len(starts):
             last_index = len(starts) - 1
-            if metaops[last_index][2] < start:
+            if metaops[last_index][2] < op_start:
                 return metaops[last_index]
             else: return []
 
-        while(pos > 0 and metaops[pos][2] >= start):
+        while(pos > 0 and metaops[pos][2] >= op_start):
             pos -= 1
         
         if pos > 0:
             return metaops[pos]
         elif pos == 0:
-            if metaops[pos][2] < start:
+            if metaops[pos][2] < op_start:
                 return metaops[pos]
         return []
 
@@ -92,7 +92,21 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
             if first_sync and first_sync not in assigned_other:
                 assigned_other.append(first_sync)
             if last_set_size and last_set_size not in assigned_other:
+                #print(f"SET_SIZE FOUND: {last_set_size}")
                 assigned_other.append(last_set_size)
+
+                # also include first file open where only set_size is called before closing
+                last_open_before_set_size = get_last_before(last_set_size, opens, opens_starts)
+                first_close_after_set_size = get_first_after(last_set_size, closes, closes_starts)
+
+                if last_open_before_set_size and last_open_before_set_size not in assigned_opens:
+                    #print(f"OPEN BEFORE SET_SIZE: {last_open_before_set_size}")
+                    assigned_opens.append(last_open_before_set_size)
+                if first_close_after_set_size and first_close_after_set_size not in assigned_closes:
+                    assigned_closes.append(first_close_after_set_size)
+
+    # TODO: maybe add ftruncate and fcntl as metaops for posix
+
 
     return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
 
@@ -191,6 +205,15 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
 
 
 def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_times, files_read_times, posix: bool):
+    
+    def debug_not_assigned(mop_list, mop_type, write_metaops, read_metaops):
+        if mop_list:   
+            for x in mop_list:
+                if x not in write_metaops[mop_type] and x not in read_metaops[mop_type]:
+                    print(f"UNASSIGNED METAOP: {x}")
+    
+    
+    
     write_intervals = filter_intervals(intervals, 'write')
     read_intervals  = filter_intervals(intervals, 'read')
     open_intervals  = filter_intervals(intervals, 'open')
@@ -216,6 +239,10 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_time
         close_r_times = [0.0] * ranks
         e2e_r_times   = [0.0] * ranks
         read_times = files_read_times[filename]
+        print(f"{'-' * 30}")
+        print(f"{'POSIX' if posix else 'MPI-IO'}")
+        print(f"{'-' * 30}")
+        print(f"FILE: {filename}")
         
         for rank in range(ranks):
             # the meta time gets partitioned more than necessary for the overall meta time
@@ -227,9 +254,22 @@ def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_time
             seeks  = sorted([x for x in seek_intervals[filename] if x[0] == rank], key=lambda x: x[1])
             syncs  = sorted([x for x in sync_intervals[filename] if x[0] == rank], key=lambda x: x[1])
             set_sizes = sorted([x for x in set_size_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+
+            print(f"RANK {rank}")
+            #print(f"OPEN INTERVALS: {opens}")
             
             write_metaops = assign_metaops(writes, opens, closes, seeks, syncs, set_sizes, True)
             read_metaops = assign_metaops(reads, opens, closes, seeks, syncs, set_sizes, False)
+
+            #print(f"WRITE OPENS: {write_metaops['open']}")
+            #print(f"READ OPENS: {read_metaops['open']}")
+            #print("\n")
+
+            for mop_list in (seeks, syncs, set_sizes):
+                debug_not_assigned(mop_list, "other", write_metaops, read_metaops)
+            debug_not_assigned(opens, "open", write_metaops, read_metaops)
+            debug_not_assigned(closes, "close", write_metaops, read_metaops)
+
 
             open_w_times[rank]  = get_duration_sum(write_metaops['open'])
             close_w_times[rank] = get_duration_sum(write_metaops['close'])
