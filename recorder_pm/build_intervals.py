@@ -118,6 +118,10 @@ def build_intervals(reader, posix: bool):
                 operation = "seek"
             elif "sync" in func:
                 operation = "sync"
+            elif "ftruncate" in func:
+                operation = "ftruncate"
+            #elif "fcntl" in func:
+            #    operation = "fcntl"
             else: continue
         else:
             if "write" in func:
@@ -142,6 +146,6 @@ def build_intervals(reader, posix: bool):
 
         if filename not in intervals:
             intervals[filename] = []
-        intervals[filename].append([rank, record.tstart, record.tend, operation, count])
-
+        # func currently only for debug purposes
+        intervals[filename].append([rank, record.tstart, record.tend, operation, count, func])
     return intervals
