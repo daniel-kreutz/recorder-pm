@@ -8,15 +8,6 @@ from datetime import datetime
 from bisect import bisect_left, bisect_right
 
 
-#def filter_intervals(intervals, op):
-#    return_intervals = {}
-#    for filename in intervals:
-#        return_intervals[filename] = []
-#        for interval in intervals[filename]:
-#            if op == interval[3]:
-#                return_intervals[filename].append(interval)
-#    return return_intervals
-
 def filter_intervals(intervals, op):
     return {
         filename: [interval for interval in file_intervals if interval[3] == op]
@@ -31,18 +22,24 @@ def get_duration_sum(intervals):
     return duration_sum
 
 
-def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool):
+def assign_metaops(intervals, ioop, metaops_strs):
 
-    def get_last_before(ioop, metaops, starts):
+    def get_last_before(ioop, metaops, starts, is_fcntl: bool):
         if not metaops: return []
         
         op_start = ioop[1]
-        pos = bisect_left(starts, op_start)
-        if pos >= len(starts):
-            last_index = len(starts) - 1
-            if metaops[last_index][2] < op_start:
-                return metaops[last_index]
-            else: return []
+        # bisect_left returns index of first starts element e with e >= op_start
+        # since realistically no two timestamps are the same, the relevant index
+        # is always one before e
+        pos = bisect_left(starts, op_start) - 1
+
+        if pos < 0:
+            return []
+
+        # fcntl sometimes starts before pwrite / pread but ends after
+        # to avoid unassigned fcntl calls, only look at start of fcntl
+        if is_fcntl:
+            return metaops[pos]
 
         while(pos > 0 and metaops[pos][2] >= op_start):
             pos -= 1
@@ -55,60 +52,54 @@ def assign_metaops(ioops, opens, closes, seeks, syncs, set_sizes, writeOps: bool
         return []
 
     
-    def get_first_after(ioop, metaops, starts):
+    def get_first_after(ioop, metaops, starts, is_fcntl: bool):
         if not metaops: return []
-        end = ioop[2]
+        # in some cases fcntl starts after pwrite / pread started but before pwrite / pread ended
+        end = ioop[1] if is_fcntl else ioop[2]
         pos = bisect_right(starts, end)
         if pos >= len(starts):
             return []
         return metaops[pos]
 
 
-    assigned_opens = []
-    assigned_closes = []
-    assigned_other = []
-
-    opens_starts = [x[1] for x in opens]
-    closes_starts = [x[1] for x in closes]
-    seeks_starts = [x[1] for x in seeks]
-    syncs_starts = [x[1] for x in syncs]
-    set_sizes_starts = [x[1] for x in set_sizes]
-
-    for op in ioops:
-        last_open = get_last_before(op, opens, opens_starts)
-        last_seek = get_last_before(op, seeks, seeks_starts)
-        first_close = get_first_after(op, closes, closes_starts)
-
-        if last_open and last_open not in assigned_opens:
-            assigned_opens.append(last_open)
-        if last_seek and last_seek not in assigned_other:
-            assigned_other.append(last_seek)
-        if first_close and first_close not in assigned_closes:
-            assigned_closes.append(first_close)
-        if writeOps:
-            first_sync = get_first_after(op, syncs, syncs_starts)
-            last_set_size = get_last_before(op, set_sizes, set_sizes_starts)
-
-            if first_sync and first_sync not in assigned_other:
-                assigned_other.append(first_sync)
-            if last_set_size and last_set_size not in assigned_other:
-                #print(f"SET_SIZE FOUND: {last_set_size}")
-                assigned_other.append(last_set_size)
-
-                # also include first file open where only set_size is called before closing
-                last_open_before_set_size = get_last_before(last_set_size, opens, opens_starts)
-                first_close_after_set_size = get_first_after(last_set_size, closes, closes_starts)
-
-                if last_open_before_set_size and last_open_before_set_size not in assigned_opens:
-                    #print(f"OPEN BEFORE SET_SIZE: {last_open_before_set_size}")
-                    assigned_opens.append(last_open_before_set_size)
-                if first_close_after_set_size and first_close_after_set_size not in assigned_closes:
-                    assigned_closes.append(first_close_after_set_size)
-
-    # TODO: maybe add ftruncate and fcntl as metaops for posix
+    def add_metaop(metaop, assigned_metaops, mop_key):
+        if metaop and metaop not in assigned_metaops[mop_key]:
+            assigned_metaops[mop_key].append(metaop)
 
 
-    return {"open": assigned_opens, "close": assigned_closes, "other": assigned_other}
+    assigned_mops = {"open": [], "close": [], "other": []}
+
+    starts = {}
+    for mop in metaops_strs:
+        starts[mop] = [x[1] for x in intervals[mop]]
+
+    for op in intervals[ioop]:
+
+        for mop in ("open", "seek", "fcntl"):
+            last_before = get_last_before(op, intervals[mop], starts[mop], mop == "fcntl")
+            mop_key = mop if mop == "open" else "other"
+            add_metaop(last_before, assigned_mops, mop_key)
+        
+        for mop in ("close", "fcntl"):
+            first_after = get_first_after(op, intervals[mop], starts[mop], mop == "fcntl")
+            mop_key = mop if mop == "close" else "other"
+            add_metaop(first_after, assigned_mops, mop_key)
+
+        if ioop == "write":
+            first_sync = get_first_after(op, intervals["sync"], starts["sync"], False)
+            add_metaop(first_sync, assigned_mops, "other")
+
+            for mop in ("set_size", "ftruncate"):
+                last_before = get_last_before(op, intervals[mop], starts[mop], False)
+                add_metaop(last_before, assigned_mops, "other")
+
+                if last_before:
+                    last_open = get_last_before(last_before, intervals["open"], starts["open"], False)
+                    add_metaop(last_open, assigned_mops, "open")
+                    first_close = get_first_after(last_before, intervals["close"], starts["close"], False)
+                    add_metaop(first_close, assigned_mops, "close")
+
+    return assigned_mops
 
 
 def get_file_bytes(intervals, byte_dict, posix: bool):
@@ -166,11 +157,11 @@ def set_byte_counts(file_bytes, metricObj: MetricObject):
 def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
     op_time_key = "posix_op_time" if posix else "mpiio_op_time"
     pure_bw_key = "posix_pure_bw" if posix else "mpiio_pure_bw"
-    files_write_times = {}
-    files_read_times = {}
+    files_pure_times = {}
     
     for filename in intervals:
 
+        files_pure_times[filename] = {}
         write_times = [0.0] * ranks
         read_times = [0.0] * ranks
 
@@ -185,9 +176,8 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
             elif operation == "write":
                 write_times[rank] += duration
 
-
-        files_write_times[filename] = write_times
-        files_read_times[filename] = read_times
+        files_pure_times[filename]["write"] = write_times
+        files_pure_times[filename]["read"] = read_times
         
         max_read_time = max(read_times)
         max_write_time = max(write_times)
@@ -201,88 +191,57 @@ def op_time_pure_bw(intervals, ranks, metricObj: MetricObject, posix: bool):
             metricObj.metrics[filename]['write'][op_time_key] = max_write_time
             metricObj.metrics[filename]['write'][pure_bw_key] = metricObj.metrics[filename]['write']['bytes'] / max_write_time / (1024*1024)
         
-    return files_write_times, files_read_times
+    return files_pure_times
 
 
-def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_write_times, files_read_times, posix: bool):
+def meta_time_e2e_bw(intervals, ranks, metricObj: MetricObject, files_pure_times, posix: bool):
     
-    def debug_not_assigned(mop_list, mop_type, write_metaops, read_metaops):
+    def debug_not_assigned(mop_list, mop_type, metaops, rank):
         if mop_list:   
             for x in mop_list:
-                if x not in write_metaops[mop_type] and x not in read_metaops[mop_type]:
-                    print(f"UNASSIGNED METAOP: {x}")
+                if x not in metaops["write"][mop_type] and x not in metaops["read"][mop_type]:
+                    print(f"Rank {rank} unassigned MOp: {x}")
     
-    
-    
-    write_intervals = filter_intervals(intervals, 'write')
-    read_intervals  = filter_intervals(intervals, 'read')
-    open_intervals  = filter_intervals(intervals, 'open')
-    close_intervals = filter_intervals(intervals, 'close')
-    # these intervals are not necessarily relevant, however in this case filter_intervals just returns an empty list
-    seek_intervals  = filter_intervals(intervals, 'seek')
-    sync_intervals  = filter_intervals(intervals, 'sync')
-    set_size_intervals = filter_intervals(intervals, 'set_size')
+
+    filtered_intervals = {}
+    op_strs = ("write", "read", "open", "close", "seek", "sync", "set_size", "ftruncate", "fcntl")
+    for op in op_strs:
+        filtered_intervals[op] = filter_intervals(intervals, op)
 
     meta_time_key = "posix_meta_time" if posix else "mpiio_meta_time"
     e2e_bw_key = "posix_e2e_bw" if posix else "mpiio_e2e_bw"
 
     for filename in intervals:
 
-        meta_w_times  = [0.0] * ranks
-        open_w_times  = [0.0] * ranks
-        close_w_times = [0.0] * ranks
-        e2e_w_times   = [0.0] * ranks
-        write_times = files_write_times[filename]
-
-        meta_r_times  = [0.0] * ranks
-        open_r_times  = [0.0] * ranks
-        close_r_times = [0.0] * ranks
-        e2e_r_times   = [0.0] * ranks
-        read_times = files_read_times[filename]
-        print(f"{'-' * 30}")
-        print(f"{'POSIX' if posix else 'MPI-IO'}")
-        print(f"{'-' * 30}")
-        print(f"FILE: {filename}")
+        file_times = {"write": {}, "read": {}}
+        for op in ("write", "read"):
+            file_times[op]["pure"] = files_pure_times[filename][op]
+            for time in ("open", "close", "all_meta", "e2e"):
+                file_times[op][time] = [0.0] * ranks
         
         for rank in range(ranks):
-            # the meta time gets partitioned more than necessary for the overall meta time
-            # however for possible future metrics (i.e. max open / close time) it stays that way for now
-            writes = sorted([x for x in write_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            reads  = sorted([x for x in read_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            opens  = sorted([x for x in open_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            closes = sorted([x for x in close_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            seeks  = sorted([x for x in seek_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            syncs  = sorted([x for x in sync_intervals[filename] if x[0] == rank], key=lambda x: x[1])
-            set_sizes = sorted([x for x in set_size_intervals[filename] if x[0] == rank], key=lambda x: x[1])
+            # get only intervals of current rank and sort them by tstart
+            rank_intervals = {}
+            for op in op_strs:
+                rank_intervals[op] = sorted([x for x in filtered_intervals[op][filename] if x[0] == rank], key=lambda x: x[1])
 
-            print(f"RANK {rank}")
-            #print(f"OPEN INTERVALS: {opens}")
-            
-            write_metaops = assign_metaops(writes, opens, closes, seeks, syncs, set_sizes, True)
-            read_metaops = assign_metaops(reads, opens, closes, seeks, syncs, set_sizes, False)
+            metaops_strs = ("open", "close", "seek", "sync", "set_size", "ftruncate", "fcntl")
 
-            #print(f"WRITE OPENS: {write_metaops['open']}")
-            #print(f"READ OPENS: {read_metaops['open']}")
-            #print("\n")
+            metaops = {"write": {}, "read": {}}
+            for op in ("write", "read"):
+                metaops[op] = assign_metaops(rank_intervals, op, metaops_strs)
+                file_times[op]["open"][rank] = get_duration_sum(metaops[op]["open"])
+                file_times[op]["close"][rank] = get_duration_sum(metaops[op]["close"])
+                file_times[op]["all_meta"][rank] = get_duration_sum(metaops[op]["other"]) + file_times[op]["open"][rank] + file_times[op]["close"][rank]
+                file_times[op]["e2e"][rank] = file_times[op]["pure"][rank] + file_times[op]["all_meta"][rank]
 
-            for mop_list in (seeks, syncs, set_sizes):
-                debug_not_assigned(mop_list, "other", write_metaops, read_metaops)
-            debug_not_assigned(opens, "open", write_metaops, read_metaops)
-            debug_not_assigned(closes, "close", write_metaops, read_metaops)
+            # debug, to print metaop intervals that were not assigned
+            #for mop_type in metaops_strs:
+            #    metaops_type = mop_type if mop_type == "open" or mop_type == "close" else "other"
+            #    debug_not_assigned(rank_intervals[mop_type], metaops_type, metaops, rank)
 
-
-            open_w_times[rank]  = get_duration_sum(write_metaops['open'])
-            close_w_times[rank] = get_duration_sum(write_metaops['close'])
-            meta_w_times[rank]  = get_duration_sum(write_metaops['other']) + open_w_times[rank] + close_w_times[rank]
-            e2e_w_times[rank]   = write_times[rank] + meta_w_times[rank]
-
-            open_r_times[rank]  = get_duration_sum(read_metaops['open'])
-            close_r_times[rank] = get_duration_sum(read_metaops['close'])
-            meta_r_times[rank]  = get_duration_sum(read_metaops['other']) + open_r_times[rank] + close_r_times[rank]
-            e2e_r_times[rank]   = read_times[rank] + meta_r_times[rank]
-
-        max_e2e_write = max(e2e_w_times)
-        max_e2e_read = max(e2e_r_times)
+        max_e2e_write = max(file_times["write"]["e2e"])
+        max_e2e_read = max(file_times["read"]["e2e"])
         bytes_written = metricObj.metrics[filename]['write']['bytes']
         bytes_read = metricObj.metrics[filename]['read']['bytes']
 
@@ -316,10 +275,9 @@ def aggregate_metrics(metricObj: MetricObject, write: bool):
             metricObj.metrics['overall'][op_key]["avg_" + level + "_e2e_bw"] = sum(x[level + "_e2e_bw"] for x in file_metrics) / len(file_metrics)
 
     op_key = "write" if write else "read"
-    file_metrics = [metricObj.metrics[x][op_key] for x in metricObj.metrics if x != 'overall']
+    file_metrics = [metricObj.metrics[x][op_key] for x in metricObj.metrics if not ignore_filename(x, metricObj)]
     set_agg_metrics(metricObj, op_key, file_metrics, True)
     set_agg_metrics(metricObj, op_key, file_metrics, False)
-
 
 
 def print_overall_operation(file, op):
@@ -368,7 +326,6 @@ def ignore_filename(filename, metricObj: MetricObject):
     return all(x == 0 for x in metricObj.metrics[filename]['write'].values()) and all(x == 0 for x in metricObj.metrics[filename]['read'].values())
 
 
-
 def print_metrics(reader, output_path):
     start = datetime.now()
     metrics = MetricObject(reader)
@@ -382,11 +339,11 @@ def print_metrics(reader, output_path):
     get_file_bytes(mpiio_intervals, file_bytes, False)
     set_byte_counts(file_bytes, metrics)
 
-    posix_write_times, posix_read_times = op_time_pure_bw(posix_intervals, ranks, metrics, True)
-    meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_write_times, posix_read_times, True)
+    posix_pure_times = op_time_pure_bw(posix_intervals, ranks, metrics, True)
+    meta_time_e2e_bw(posix_intervals, ranks, metrics, posix_pure_times, True)
 
-    mpiio_write_times, mpiio_read_times = op_time_pure_bw(mpiio_intervals, ranks, metrics, False)
-    meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_write_times, mpiio_read_times, False)
+    mpiio_pure_times = op_time_pure_bw(mpiio_intervals, ranks, metrics, False)
+    meta_time_e2e_bw(mpiio_intervals, ranks, metrics, mpiio_pure_times, False)
 
     aggregate_metrics(metrics, True)
     aggregate_metrics(metrics, False)
